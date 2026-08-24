@@ -24,9 +24,9 @@ nothing above section 4 changes when the binding changes.
 
 The protocol is organized in two layers:
 
-- **Pipe layer.** Multiplexes 16 logical channels (pipes) onto one connection.
-  Pipe 0 carries connection control, pipe open, and pipe close; pipes 1 through
-  15 each carry one service.
+- **Pipe layer.** Multiplexes 15 logical channels (pipes) onto one connection,
+  each carrying one service. Connection control and pipe open ride reserved
+  routing values rather than a pipe of their own.
 - **Call layer.** Carries requests and replies as host blocks addressed to an
   interface and a method, with typed parameters.
 
@@ -79,12 +79,13 @@ identifier.
 
 **peer** — either party to a connection.
 
-**pipe** — one of 16 logical channels multiplexed on a connection.
+**pipe** — one of 15 logical channels multiplexed on a connection, numbered 1
+through 15.
 
 **pipe frame** — the unit into which the Select binding cuts a pipe message: a
 header byte, an optional length byte, and content. *(Select)*
 
-**pipe index** — the number 0 through 15 that names a pipe.
+**pipe index** — the number 1 through 15 that names a pipe.
 
 **pipe message** — the unit of the pipe layer: a routing value followed by
 content.
@@ -99,8 +100,8 @@ field the caller expects in the reply.
 message while it is in flight, so that a receiver can tell partially received
 messages apart. It is not a pipe index (section 4.2.3). *(Select)*
 
-**record** — the unit of the Straight binding: a length, a command-byte echo, and
-one pipe message. *(Straight)*
+**record** — the unit of the Straight binding: a length, a command-byte echo,
+and one pipe message. *(Straight)*
 
 **reply** — a host block returned for a call, repeating the call's class,
 method, and request identifier.
@@ -151,12 +152,15 @@ announces itself, the server sends its transport parameters, the client sends a
 connection request and the server echoes it (section 3.1.3). The two then
 exchange pipe messages until one of them tears the connection down.
 
-Pipe 0 carries connection control: transport parameters, connection request and
-confirmation, pipe-open requests, and their responses. To reach a service, the
-client sends a pipe-open request on pipe 0 naming the service, a version, and
-the pipe index it intends to use. The server answers on that index and
-immediately sends the interface table for the service, mapping each interface
-GUID the service supports to a one-byte interface identifier.
+Connection control — transport parameters, the connection request and its
+confirmation — travels on the reserved routing value 0xFFFF, and a pipe-open
+request on the reserved routing value 0x0000. Neither is a pipe, and no message
+ever names pipe 0: the number is not addressable, its routing value being the
+pipe-open request itself. To reach a service, the client sends a pipe-open
+request naming the service, a version, and the pipe index it intends to use.
+The server answers on that index and immediately sends the interface table for
+the service, mapping each interface GUID the service supports to a one-byte
+interface identifier.
 
 The client resolves the GUID it needs against that table and issues calls. A
 call is a host block whose class byte is the interface identifier, whose method
@@ -182,7 +186,7 @@ same pipe.
   ------------------------------------------------------------------
   call layer         host blocks, interfaces, methods, parameters
   ------------------------------------------------------------------
-  pipe layer         16 logical channels, routing, open and close
+  pipe layer         15 logical channels, routing, open and close
   ==================================================================
   transport binding  Select                    | Straight
                      packets, escape encoding, | length-prefixed
@@ -263,8 +267,8 @@ None. Interface identity uses GUIDs, which require no assignment authority.
 #### 2.1.1 Abstract Transport Service
 
 A transport binding carries **pipe units** between the two peers. A pipe unit is
-one pipe message (section 2.2.2). Each binding wraps it in a framing field of its
-own — a reassembly index on Select (section 4.2.3), an echo of the message's
+one pipe message (section 2.2.2). Each binding wraps it in a framing field of
+its own — a reassembly index on Select (section 4.2.3), an echo of the message's
 command byte on Straight (section 4.3.1) — and neither is addressing (section
 3.1.5.1).
 
@@ -440,7 +444,7 @@ Receivers compare GUIDs byte for byte.
 | 0x0010 - 0xFFFE | Unassigned. A receiver MUST discard the message. |
 | 0xFFFF | Control frame (section 2.2.3.1) |
 
-Every pipe message begins with a routing value, on every pipe and in both
+Every pipe message begins with a routing value, whatever it is for and in both
 directions. A receiver dispatches on it per section 3.1.5.1.
 
 A message whose routing value is a pipe index carries the pipe-open response
@@ -457,7 +461,7 @@ Select binding ContentLength can express 65,535; a receiver MUST discard a
 message whose declared length exceeds 65,532 rather than reassemble it (section
 6.2).
 
-#### 2.2.3 Pipe 0 Content
+#### 2.2.3 Pipe Message Content
 
 ##### 2.2.3.1 Control Frame
 
@@ -1198,8 +1202,9 @@ client MAY apply its own call timeout; the protocol defines none.
 
 #### 3.1.3 Connection Bring-Up
 
-Bring-up begins once the binding reports the link up, and consists of four pipe
-messages on pipe 0. Section 5.1 shows all four on both bindings:
+Bring-up begins once the binding reports the link up, and consists of four
+connection-level pipe messages, none of them on a pipe. Section 5.1 shows all
+four on both bindings:
 
 1. The client sends a type 4 control frame (section 2.2.3.1.3) as soon as the
    binding's framing is up, without waiting to be prompted.
@@ -1274,19 +1279,20 @@ Every discard above is silent. No error message exists at this layer and none is
 sent.
 
 Whatever framing field the binding reports, a receiver MUST route on the routing
-value. This is the one place that rule is stated; sections 2.2.2, 4.2.2 and 4.3.1
-refer to it. Neither binding's field carries a pipe number, and a receiver MUST
-NOT read one out of either.
+value. This is the one place that rule is stated; sections 2.2.2, 4.2.2 and
+4.3.1 refer to it. Neither binding's field carries a pipe number, and a receiver
+MUST NOT read one out of either.
 
 On Select the field is a reassembly index (section 4.2.3): transmit state, taken
 free when a message begins and released when it completes. The number says only
-which of the sixteen were free at the time, so two messages on one pipe routinely
-carry different indexes and two messages on different pipes carry the same one.
+which of the sixteen were free at the time, so two messages on one pipe
+routinely carry different indexes and two on different pipes carry the same
+one.
 
-On Straight the field echoes the pipe message's command byte (section 4.3.1) and
-is zero for every message that has none. A receiver that read it as a pipe number
-would address every call and every reply to pipe 0, and every close to pipe 1
-(section 5.8).
+On Straight the field echoes the pipe message's command byte (section 4.3.1)
+and is zero for every message that has none. A receiver that read it as a pipe
+number would address every call and every reply to a number that cannot name a
+pipe, and apply every close to pipe 1 (section 5.8).
 
 #### 3.1.6 Timer Events
 
@@ -1471,7 +1477,7 @@ section (section 2.2.8.1), and sends are serialized per section 2.1.1.
 
 The server:
 
-1. Validates the request. A request naming pipe index 0, an index above 15, or
+1. Validates the request. A request naming index 0, an index above 15, or
    an index that is already **opening or open** is discarded: no response, no
    table, and no change to the state of the pipe that is already there.
    Rebinding a live pipe would strand every call outstanding on it, and index 0
@@ -2413,7 +2419,7 @@ frames them per section 4.
 
 ### 5.1 Bring-Up
 
-The four pipe messages of section 3.1.3, on pipe 0.
+The four connection-level messages of section 3.1.3.
 
 Server, transport parameters:
 
@@ -2472,7 +2478,7 @@ Server to client, transport parameters, sequence 0:
 |---|---|
 | `80` | Seq: bit 7 set, sequence 0 |
 | `80` | Ack: bit 7 set, expecting sequence 0 |
-| `e0` | Pipe header: pipe 0, Continuation, LastData |
+| `e0` | Pipe header: reassembly index 0, Continuation, LastData |
 | `17 00` | ContentLength 23 |
 | `ff ff 03 …` | The pipe message |
 | `1b 32` | The WindowSize byte 0x10, escape-encoded |
@@ -2675,7 +2681,7 @@ Over Select, in one packet of 70 wire bytes:
 | Bytes | Meaning |
 |---|---|
 | `84 84` | Seq 4, Ack 4 |
-| `e3` | Pipe header: pipe 3, Continuation, LastData |
+| `e3` | Pipe header: reassembly index 3, Continuation, LastData |
 | `3b 00` | ContentLength 59, no byte of which needs escaping |
 | `1b 35` | The size byte 0x90, escape-encoded |
 | `2b 11 96 ab` | Check field |
@@ -2901,7 +2907,7 @@ The pipe message is 11 bytes. Over Select, at sequence 5:
 | Bytes | Meaning |
 |---|---|
 | `85 85` | Seq 5, Ack 5 |
-| `e3` | Pipe header: pipe 3, Continuation, LastData |
+| `e3` | Pipe header: reassembly index 3, Continuation, LastData |
 | `1b 33 00` | ContentLength 11. The low byte 0x0B is a reserved value and is escape-encoded |
 | `ee b4 47 3b` | Check field |
 
@@ -2998,7 +3004,7 @@ what a receiver does when the bound is breached:
 | Decompressed field size | An implementation-chosen ceiling on the bytes a 0x44 or 0x45 field expands to (section 2.2.7.4) | Error 0xE0000007 for 0x44, 0xE0000009 for 0x45; the partial output is discarded. |
 | Concurrent streams | One per stream identifier, 256 per connection | Error 0xE0000009 on the call that would exceed it. |
 | Outstanding calls | 256 per pipe | Discard the call. |
-| Pipes | 16 per connection (section 2.2.2) | Discard the pipe-open request (section 3.3.5.1). |
+| Pipes | 15 per connection (section 2.2.2) | Discard the pipe-open request (section 3.3.5.1). |
 | Control frame type-specific field | 4,096 bytes | Discard the frame; do not echo it (section 2.2.3.1.1). |
 | ServiceName, Parameter | 256 bytes each, including the NUL | Discard the pipe-open request. |
 
@@ -3928,7 +3934,7 @@ struct ClientState {
     transport_parameters: optional<TransportParameters>;
     bring_up: ClientBringUpPhase;
     connection_log: ConnectionLog;
-    pipes: array<ClientPipeSlot,16>;
+    pipes: array<ClientPipeSlot,16>; /* by pipe number; entry 0 unused */
     next_stream_id: StreamId;
 }
 
@@ -3965,7 +3971,7 @@ union ServerPipeSlot {
 struct ServerState {
     binding: TransportBinding;
     transport_parameters: TransportParameters;
-    pipes: array<ServerPipeSlot,16>;
+    pipes: array<ServerPipeSlot,16>; /* by pipe number; entry 0 unused */
     session: optional<SessionState>;
     open_streams: map<StreamId,OpenStream,256>;
     had_service_pipe: bool;
@@ -4099,7 +4105,7 @@ interface ProtocolOps {
 
     fn dispatch_pipe_message(
         role: PeerRole,
-        pipe_phases: array<PipePhase,16>,
+        pipe_phases: array<PipePhase,16>, /* by pipe number; entry 0 unused */
         message: PipeMessage
     ) -> PipeDispatch;
 
