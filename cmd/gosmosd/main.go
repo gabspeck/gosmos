@@ -7,7 +7,6 @@ import (
 	"net/rpc"
 
 	gosmosrpc "gabriels.io/gosmos/rpc"
-	"gabriels.io/gosmos/svc"
 )
 
 func main() {
@@ -15,7 +14,6 @@ func main() {
 	if err != nil {
 		log.Fatalln(err)
 	}
-	err = rpc.Register(&svc.ControlFrame{})
 	if err != nil {
 		log.Fatalln(err)
 	}
