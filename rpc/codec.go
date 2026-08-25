@@ -7,31 +7,51 @@ import (
 	"net/rpc"
 )
 
-var _ rpc.ServerCodec = &MosStraightServerCodec{}
+var _ rpc.ServerCodec = &MosServerCodec{}
 
-type MosStraightServerCodec struct {
+type MosServerCodec struct {
 	seq  uint64
+	len  int
 	conn io.ReadWriteCloser
 }
 
-func NewMosStraightServerCodec(conn io.ReadWriteCloser) *MosStraightServerCodec {
-	return &MosStraightServerCodec{
+type fieldDecoder interface {
+	decodeParams(*fieldReader) error
+}
+
+func NewMosServerCodec(conn io.ReadWriteCloser) *MosServerCodec {
+	return &MosServerCodec{
 		conn: conn,
 	}
 }
 
 // Close implements [rpc.ServerCodec].
-func (m *MosStraightServerCodec) Close() error {
+func (m *MosServerCodec) Close() error {
 	panic("unimplemented")
 }
 
 // ReadRequestBody implements [rpc.ServerCodec].
-func (m *MosStraightServerCodec) ReadRequestBody(any) error {
-	panic("unimplemented")
+func (m *MosServerCodec) ReadRequestBody(p any) error {
+	decoder, ok := p.(fieldDecoder)
+	if !ok {
+		return fmt.Errorf("not a fieldDecoder")
+	}
+
+	buf := make([]byte, m.len)
+
+	if _, err := io.ReadFull(m.conn, buf); err != nil {
+		return err
+	}
+
+	if err := decoder.decodeParams(&fieldReader{buf: buf}); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 // ReadRequestHeader implements [rpc.ServerCodec].
-func (m *MosStraightServerCodec) ReadRequestHeader(r *rpc.Request) error {
+func (m *MosServerCodec) ReadRequestHeader(r *rpc.Request) error {
 	r.Seq = m.seq
 	m.seq += 1
 
@@ -59,10 +79,11 @@ func (m *MosStraightServerCodec) ReadRequestHeader(r *rpc.Request) error {
 		return fmt.Errorf("unhandled routing: 0x%02x", routing)
 	}
 
+	m.len = size - len(header)
 	return nil
 }
 
 // WriteResponse implements [rpc.ServerCodec].
-func (m *MosStraightServerCodec) WriteResponse(*rpc.Response, any) error {
+func (m *MosServerCodec) WriteResponse(r *rpc.Response, p any) error {
 	panic("unimplemented")
 }

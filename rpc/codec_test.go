@@ -64,7 +64,7 @@ func TestReadRequestHeader(t *testing.T) {
 
 			result := make(chan error, 1)
 
-			codec := NewMosStraightServerCodec(server)
+			codec := NewMosServerCodec(server)
 
 			req := rpc.Request{}
 			go client.Write([]byte{tC.length[0], tC.length[1], 0x00, tC.routing[0], tC.routing[1]})
@@ -88,5 +88,44 @@ func TestReadRequestHeader(t *testing.T) {
 				t.Fatalf("wanted req.ServiceMethod %q; got %q", tC.method, req.ServiceMethod)
 			}
 		})
+	}
+}
+
+type TestProcedureParams struct {
+	SomeUint16 uint16
+}
+
+func (t *TestProcedureParams) decodeParams(f *fieldReader) error {
+	t.SomeUint16 = f.Uint16()
+	return f.Done()
+}
+
+func TestReadRequestBody(t *testing.T) {
+	server, client := net.Pipe()
+	defer func() {
+		server.Close()
+		client.Close()
+	}()
+	server.SetDeadline(time.Now().Add(time.Second))
+	client.SetDeadline(time.Now().Add(time.Second))
+
+	result := make(chan error, 1)
+
+	buf := []byte{TagRequestUint16, 0xca, 0xc0}
+
+	go client.Write(buf)
+
+	codec := &MosServerCodec{conn: server, len: len(buf)}
+	params := TestProcedureParams{}
+	go func() {
+		result <- codec.ReadRequestBody(&params)
+	}()
+
+	if err := <-result; err != nil {
+		t.Fatal(err)
+	}
+	const want = 0xc0ca
+	if params.SomeUint16 != want {
+		t.Fatalf("wanted 0x%04x; got 0x%04x", want, params.SomeUint16)
 	}
 }

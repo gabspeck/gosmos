@@ -26,6 +26,6 @@ func main() {
 			log.Println(err)
 			continue
 		}
-		go rpc.ServeCodec(gosmosrpc.NewMosStraightServerCodec(conn))
+		go rpc.ServeCodec(gosmosrpc.NewMosServerCodec(conn))
 	}
 }
