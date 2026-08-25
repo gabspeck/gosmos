@@ -14,6 +14,7 @@ func main() {
 	if err != nil {
 		log.Fatalln(err)
 	}
+	err = rpc.Register(gosmosrpc.Pipes{})
 	if err != nil {
 		log.Fatalln(err)
 	}
@@ -25,6 +26,6 @@ func main() {
 			log.Println(err)
 			continue
 		}
-		go rpc.ServeCodec(gosmosrpc.NewMosServerCodec(conn))
+		go rpc.ServeCodec(gosmosrpc.NewMosStraightServerCodec(conn))
 	}
 }

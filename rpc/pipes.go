@@ -16,10 +16,26 @@ type (
 		ServerPipeIndex uint16
 		Status          uint16
 	}
+	PipeDataRequest struct {
+		PipeIndex uint16
+		Data      []byte
+	}
+	PipeDataResponse    struct{}
+	ControlFrameRequest struct {
+		Type    uint8
+		Content []byte
+	}
+	ControlFrameResponse struct{}
 )
 
 func (p *Pipes) Open(PipeOpenRequest, *PipeOpenResponse) error {
 	return nil
 }
-func (p *Pipes) Data() error         {}
-func (p *Pipes) ControlFrame() error {}
+
+func (p *Pipes) Data(PipeDataRequest, *PipeDataResponse) error {
+	return nil
+}
+
+func (p *Pipes) ControlFrame(ControlFrameRequest, *ControlFrameResponse) error {
+	return nil
+}
