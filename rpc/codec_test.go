@@ -1,6 +1,9 @@
 package rpc
 
 import (
+	"bytes"
+	"encoding/binary"
+	"fmt"
 	"net"
 	"net/rpc"
 	"testing"
@@ -92,12 +95,16 @@ func TestReadRequestHeader(t *testing.T) {
 }
 
 type TestProcedureParams struct {
-	SomeUint16 uint16
+	expectedBuf []byte
+	SomeUint16  uint16
 }
 
 func (t *TestProcedureParams) decodeParams(f *fieldReader) error {
-	t.SomeUint16 = f.Uint16()
-	return f.Done()
+	if !bytes.Equal(t.expectedBuf, f.buf) {
+		return fmt.Errorf("expected to receive buffer 0x%x; got 0x%x", t.expectedBuf, f.buf)
+	}
+	t.SomeUint16 = binary.LittleEndian.Uint16(f.buf[1:])
+	return nil
 }
 
 func TestReadRequestBody(t *testing.T) {
@@ -116,7 +123,7 @@ func TestReadRequestBody(t *testing.T) {
 	go client.Write(buf)
 
 	codec := &MosServerCodec{conn: server, len: len(buf)}
-	params := TestProcedureParams{}
+	params := TestProcedureParams{expectedBuf: buf}
 	go func() {
 		result <- codec.ReadRequestBody(&params)
 	}()
