@@ -87,6 +87,19 @@ func (f *fieldReader) NarrowString() string {
 	return string(b)
 }
 
+func (f *fieldReader) Bytes(n int) []byte {
+	if f.err != nil {
+		return nil
+	}
+	if n > len(f.buf) {
+		f.err = fmt.Errorf("wanted %d bytes, only %d available", n, len(f.buf))
+		return nil
+	}
+	v := f.buf[:n]
+	f.buf, f.fieldIndex = f.buf[n:], f.fieldIndex+1
+	return v
+}
+
 func (f *fieldReader) Done() error {
 	if f.err != nil {
 		return f.err

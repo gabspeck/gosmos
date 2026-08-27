@@ -99,11 +99,11 @@ type TestProcedureParams struct {
 	SomeUint16  uint16
 }
 
-func (t *TestProcedureParams) decodeParams(f *fieldReader) error {
-	if !bytes.Equal(t.expectedBuf, f.buf) {
-		return fmt.Errorf("expected to receive buffer 0x%x; got 0x%x", t.expectedBuf, f.buf)
+func (t *TestProcedureParams) UnmarshalBinary(buf []byte) error {
+	if !bytes.Equal(t.expectedBuf, buf) {
+		return fmt.Errorf("expected to receive buffer 0x%x; got 0x%x", t.expectedBuf, buf)
 	}
-	t.SomeUint16 = binary.LittleEndian.Uint16(f.buf[1:])
+	t.SomeUint16 = binary.LittleEndian.Uint16(buf[1:])
 	return nil
 }
 

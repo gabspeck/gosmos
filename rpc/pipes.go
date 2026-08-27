@@ -28,6 +28,20 @@ type (
 	ControlFrameResponse struct{}
 )
 
+func (p *PipeDataRequest) UnmarshalBinary(buf []byte) error {
+	f := &fieldReader{buf: buf}
+	p.PipeIndex = f.Uint16()
+	p.Data = f.Bytes(len(f.buf))
+	return f.Done()
+}
+
+func (c *ControlFrameRequest) UnmarshalBinary(buf []byte) error {
+	f := &fieldReader{buf: buf}
+	c.Type = f.Byte()
+	c.Content = f.Bytes(len(f.buf))
+	return f.Done()
+}
+
 func (p *Pipes) Open(PipeOpenRequest, *PipeOpenResponse) error {
 	return nil
 }
@@ -36,6 +50,12 @@ func (p *Pipes) Data(PipeDataRequest, *PipeDataResponse) error {
 	return nil
 }
 
-func (p *Pipes) ControlFrame(ControlFrameRequest, *ControlFrameResponse) error {
+func (p *Pipes) ControlFrame(rq ControlFrameRequest, rs *ControlFrameResponse) error {
+	switch rq.Type {
+	case 0x01:
+		return nil
+	case 0x03:
+	case 0x04:
+	}
 	return nil
 }

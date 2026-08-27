@@ -1,6 +1,7 @@
 package rpc
 
 import (
+	"encoding"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -13,10 +14,6 @@ type MosServerCodec struct {
 	seq  uint64
 	len  int
 	conn io.ReadWriteCloser
-}
-
-type fieldDecoder interface {
-	decodeParams(*fieldReader) error
 }
 
 func NewMosServerCodec(conn io.ReadWriteCloser) *MosServerCodec {
@@ -32,9 +29,9 @@ func (m *MosServerCodec) Close() error {
 
 // ReadRequestBody implements [rpc.ServerCodec].
 func (m *MosServerCodec) ReadRequestBody(p any) error {
-	decoder, ok := p.(fieldDecoder)
+	bu, ok := p.(encoding.BinaryUnmarshaler)
 	if !ok {
-		return fmt.Errorf("not a fieldDecoder")
+		return fmt.Errorf("not an unmarshaler")
 	}
 
 	buf := make([]byte, m.len)
@@ -43,7 +40,7 @@ func (m *MosServerCodec) ReadRequestBody(p any) error {
 		return err
 	}
 
-	if err := decoder.decodeParams(&fieldReader{buf: buf}); err != nil {
+	if err := bu.UnmarshalBinary(buf); err != nil {
 		return err
 	}
 
