@@ -1,5 +1,10 @@
 package rpc
 
+import (
+	"bytes"
+	"fmt"
+)
+
 type Pipes struct{}
 
 type (
@@ -20,13 +25,45 @@ type (
 		PipeIndex uint16
 		Data      []byte
 	}
-	PipeDataResponse    struct{}
-	ControlFrameRequest struct {
+	PipeDataResponse struct{}
+	ControlFrame     struct {
 		Type    uint8
 		Content []byte
 	}
-	ControlFrameResponse struct{}
+	ControlFrameRequest struct {
+		ControlFrame
+	}
+	ControlFrameResponse struct {
+		ControlFrame
+	}
 )
+
+func (c *ControlFrame) UnmarshalBinary(buf []byte) error {
+	f := fieldReader{buf: buf}
+	c.Type = f.Byte()
+	c.Content = f.Bytes(len(buf))
+	return f.Done()
+}
+
+func (c *ControlFrame) MarshalBinary() (out []byte, err error) {
+	out = append(out, c.Type)
+	out = append(out, c.Content...)
+	err = nil
+	return
+}
+
+const (
+	controlFrameConnRequest     = 0x01
+	controlFrameTransportParams = 0x03
+	controlFrameConnEstablished = 0x04
+)
+
+var defaultTransportParameters = []byte{
+	0x00, 0x04, 0x00, 0x00, // 1024
+	0x00, 0x04, 0x00, 0x00, // 1024
+	0x10, 0x00, 0x00, 0x00, // 16
+	0x01, 0x00, 0x00, 0x00, // 1
+}
 
 func (p *PipeDataRequest) UnmarshalBinary(buf []byte) error {
 	f := &fieldReader{buf: buf}
@@ -50,12 +87,21 @@ func (p *Pipes) Data(PipeDataRequest, *PipeDataResponse) error {
 	return nil
 }
 
-func (p *Pipes) ControlFrame(rq ControlFrameRequest, rs *ControlFrameResponse) error {
+func (p *Pipes) HandleControlFrame(rq ControlFrameRequest, rs *ControlFrameResponse) error {
 	switch rq.Type {
-	case 0x01:
+	case controlFrameConnRequest:
+		if len(rq.Content) < 4 {
+			return fmt.Errorf("connection request frame too short (%d)", len(rq.Content))
+		}
+		rs.Content = bytes.Clone(rq.Content)
 		return nil
-	case 0x03:
-	case 0x04:
+	case controlFrameConnEstablished:
+		if len(rq.Content) > 0 {
+			return fmt.Errorf("%d trailing bytes in connection established frame", len(rq.Content))
+		}
+		rs.Type = controlFrameTransportParams
+		rs.Content = bytes.Clone(defaultTransportParameters)
+		return nil
 	}
-	return nil
+	return fmt.Errorf("unknown control frame type 0x%x", rq.Type)
 }

@@ -2,7 +2,7 @@
 
 ## 1 Introduction
 
-The MOS Remote Procedure Call Protocol (MOS RPC) carries remote procedure calls
+The MOS Remote Procedure Call Protocol (MOS RPC) carries remote procedure callsmos
 between a client application and an online service. It addresses calls to an
 interface and a method with typed parameters, multiplexes up to 16 independent
 logical channels onto one connection, and streams bulk arguments and result sets

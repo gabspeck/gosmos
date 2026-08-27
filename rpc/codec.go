@@ -6,29 +6,46 @@ import (
 	"fmt"
 	"io"
 	"net/rpc"
+	"sync"
 )
 
 var _ rpc.ServerCodec = &MosServerCodec{}
 
 type MosServerCodec struct {
-	seq  uint64
-	len  int
-	conn io.ReadWriteCloser
+	seq     uint64
+	len     int
+	conn    io.ReadWriteCloser
+	lock    sync.Mutex
+	pending pendingRequestMap
+}
+
+type pendingRequestMap map[uint64]requestContext
+
+type requestContext struct {
+	routing uint16
+	cmd     uint8
 }
 
 func NewMosServerCodec(conn io.ReadWriteCloser) *MosServerCodec {
 	return &MosServerCodec{
-		conn: conn,
+		conn:    conn,
+		lock:    sync.Mutex{},
+		pending: make(pendingRequestMap),
 	}
 }
 
 // Close implements [rpc.ServerCodec].
 func (m *MosServerCodec) Close() error {
-	panic("unimplemented")
+	return m.conn.Close()
 }
 
 // ReadRequestBody implements [rpc.ServerCodec].
 func (m *MosServerCodec) ReadRequestBody(p any) error {
+	if p == nil {
+		// todo: probably not right
+		delete(m.pending, m.seq)
+		return m.Close()
+	}
 	bu, ok := p.(encoding.BinaryUnmarshaler)
 	if !ok {
 		return fmt.Errorf("not an unmarshaler")
@@ -63,24 +80,52 @@ func (m *MosServerCodec) ReadRequestHeader(r *rpc.Request) error {
 		return fmt.Errorf("bad packet length: %d", size)
 	}
 
-	// cmd := uint8(header[2])
-
-	switch routing := binary.LittleEndian.Uint16(header[3:]); {
+	cmd := uint8(header[2])
+	routing := binary.LittleEndian.Uint16(header[3:])
+	switch {
 	case routing == 0x0000:
 		r.ServiceMethod = "Pipes.Open"
 	case routing >= 0x0001 && routing <= 0x000F:
 		r.ServiceMethod = "Pipes.Data"
 	case routing == 0xFFFF:
-		r.ServiceMethod = "Pipes.ControlFrame"
+		r.ServiceMethod = "Pipes.HandleControlFrame"
 	default:
 		return fmt.Errorf("unhandled routing: 0x%02x", routing)
 	}
-
 	m.len = size - len(header)
+	m.lock.Lock()
+	m.pending[r.Seq] = requestContext{
+		routing: routing,
+		cmd:     cmd,
+	}
+	m.lock.Unlock()
 	return nil
 }
 
 // WriteResponse implements [rpc.ServerCodec].
 func (m *MosServerCodec) WriteResponse(r *rpc.Response, p any) error {
-	panic("unimplemented")
+	context, ok := m.pending[r.Seq]
+	if !ok {
+		return fmt.Errorf("context not found for request %d", r.Seq)
+	}
+
+	bm, ok := p.(encoding.BinaryMarshaler)
+	if !ok {
+		return fmt.Errorf("don't know how to marshal response from method %s", r.ServiceMethod)
+	}
+
+	payload := make([]byte, 4)
+
+	binary.LittleEndian.AppendUint16(payload, context.routing)
+	response, err := bm.MarshalBinary()
+	if err != nil {
+		return err
+	}
+	payload = append(payload, response...)
+	_, err = m.conn.Write(payload)
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
