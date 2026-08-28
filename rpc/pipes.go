@@ -30,18 +30,12 @@ type (
 		Type    uint8
 		Content []byte
 	}
-	ControlFrameRequest struct {
-		ControlFrame
-	}
-	ControlFrameResponse struct {
-		ControlFrame
-	}
 )
 
 func (c *ControlFrame) UnmarshalBinary(buf []byte) error {
 	f := fieldReader{buf: buf}
-	c.Type = f.Byte()
-	c.Content = f.Bytes(len(buf))
+	c.Type = f.Byte(false)
+	c.Content = f.Bytes(len(f.buf))
 	return f.Done()
 }
 
@@ -67,15 +61,8 @@ var defaultTransportParameters = []byte{
 
 func (p *PipeDataRequest) UnmarshalBinary(buf []byte) error {
 	f := &fieldReader{buf: buf}
-	p.PipeIndex = f.Uint16()
+	p.PipeIndex = f.Uint16(true)
 	p.Data = f.Bytes(len(f.buf))
-	return f.Done()
-}
-
-func (c *ControlFrameRequest) UnmarshalBinary(buf []byte) error {
-	f := &fieldReader{buf: buf}
-	c.Type = f.Byte()
-	c.Content = f.Bytes(len(f.buf))
 	return f.Done()
 }
 
@@ -87,7 +74,7 @@ func (p *Pipes) Data(PipeDataRequest, *PipeDataResponse) error {
 	return nil
 }
 
-func (p *Pipes) HandleControlFrame(rq ControlFrameRequest, rs *ControlFrameResponse) error {
+func (p *Pipes) HandleControlFrame(rq ControlFrame, rs *ControlFrame) error {
 	switch rq.Type {
 	case controlFrameConnRequest:
 		if len(rq.Content) < 4 {

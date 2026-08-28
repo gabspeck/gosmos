@@ -24,29 +24,25 @@ const (
 	TagRequestCompressedChunkedRef          = 0x45
 )
 
-func (f *fieldReader) tagged(want Tag, size int) []byte {
+func (f *fieldReader) fixed(isTagged bool, want Tag, size int) []byte {
 	if f.err != nil {
 		return nil
 	}
-	if len(f.buf) < 1+size {
+	tagSize := 0
+	if isTagged {
+		tagSize = 1
+	}
+	if len(f.buf) < tagSize+size {
 		f.err = fmt.Errorf("field %d: truncated", f.fieldIndex)
 		return nil
 	}
-	if f.buf[0] != uint8(want) {
+	if isTagged && f.buf[0] != uint8(want) {
 		f.err = fmt.Errorf("param %d: want tag 0x%02x, got 0x%02x", f.fieldIndex, want, f.buf[0])
 		return nil
 	}
-	v := f.buf[1 : 1+size]
-	f.buf, f.fieldIndex = f.buf[1+size:], f.fieldIndex+1
+	v := f.buf[tagSize : tagSize+size]
+	f.buf, f.fieldIndex = f.buf[tagSize+size:], f.fieldIndex+1
 	return v
-}
-
-func (f *fieldReader) Byte() uint8 {
-	b := f.tagged(TagRequestUint8, 1)
-	if f.err != nil {
-		return 0
-	}
-	return b[0]
 }
 
 func (f *fieldReader) terminated(term byte) []byte {
@@ -63,16 +59,24 @@ func (f *fieldReader) terminated(term byte) []byte {
 	return v
 }
 
-func (f *fieldReader) Uint16() uint16 {
-	b := f.tagged(TagRequestUint16, 2)
+func (f *fieldReader) Byte(tagged bool) uint8 {
+	b := f.fixed(tagged, TagRequestUint8, 1)
+	if f.err != nil {
+		return 0
+	}
+	return b[0]
+}
+
+func (f *fieldReader) Uint16(tagged bool) uint16 {
+	b := f.fixed(tagged, TagRequestUint16, 2)
 	if f.err != nil {
 		return 0
 	}
 	return binary.LittleEndian.Uint16(b)
 }
 
-func (f *fieldReader) Uint32() uint32 {
-	b := f.tagged(TagRequestUint32, 4)
+func (f *fieldReader) Uint32(tagged bool) uint32 {
+	b := f.fixed(tagged, TagRequestUint32, 4)
 	if f.err != nil {
 		return 0
 	}

@@ -3,8 +3,10 @@ package rpc
 import (
 	"encoding"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/rpc"
 	"sync"
 )
@@ -42,7 +44,8 @@ func (m *MosServerCodec) Close() error {
 // ReadRequestBody implements [rpc.ServerCodec].
 func (m *MosServerCodec) ReadRequestBody(p any) error {
 	if p == nil {
-		// todo: probably not right
+		fmt.Printf("[%d] nil request body received\n", m.seq)
+		// todo: actually handle this
 		delete(m.pending, m.seq)
 		return m.Close()
 	}
@@ -82,6 +85,7 @@ func (m *MosServerCodec) ReadRequestHeader(r *rpc.Request) error {
 
 	cmd := uint8(header[2])
 	routing := binary.LittleEndian.Uint16(header[3:])
+	fmt.Printf("-> [%d] routing: 0x%04x\n", r.Seq, routing)
 	switch {
 	case routing == 0x0000:
 		r.ServiceMethod = "Pipes.Open"
@@ -90,8 +94,11 @@ func (m *MosServerCodec) ReadRequestHeader(r *rpc.Request) error {
 	case routing == 0xFFFF:
 		r.ServiceMethod = "Pipes.HandleControlFrame"
 	default:
-		return fmt.Errorf("unhandled routing: 0x%02x", routing)
+		err := fmt.Errorf("unhandled routing: 0x%02x", routing)
+		log.Println(err)
+		return err
 	}
+	fmt.Printf("-> [%d] method: %s\n", r.Seq, r.ServiceMethod)
 	m.len = size - len(header)
 	m.lock.Lock()
 	m.pending[r.Seq] = requestContext{
@@ -105,23 +112,33 @@ func (m *MosServerCodec) ReadRequestHeader(r *rpc.Request) error {
 // WriteResponse implements [rpc.ServerCodec].
 func (m *MosServerCodec) WriteResponse(r *rpc.Response, p any) error {
 	context, ok := m.pending[r.Seq]
+	if r.Error != "" {
+		log.Println(r.Error)
+		return errors.New(r.Error)
+	}
 	if !ok {
 		return fmt.Errorf("context not found for request %d", r.Seq)
 	}
 
 	bm, ok := p.(encoding.BinaryMarshaler)
 	if !ok {
-		return fmt.Errorf("don't know how to marshal response from method %s", r.ServiceMethod)
+		err := fmt.Errorf("don't know how to marshal response from method %s", r.ServiceMethod)
+		log.Println(err)
+		return err
 	}
 
 	payload := make([]byte, 4)
 
+	m.lock.Lock()
 	binary.LittleEndian.AppendUint16(payload, context.routing)
+	delete(m.pending, m.seq)
+	m.lock.Unlock()
 	response, err := bm.MarshalBinary()
 	if err != nil {
 		return err
 	}
 	payload = append(payload, response...)
+	fmt.Printf("<- [%d/%s]: 0x%x\n", r.Seq, r.ServiceMethod, payload)
 	_, err = m.conn.Write(payload)
 	if err != nil {
 		return err
