@@ -60,6 +60,8 @@ func (m *MosServerCodec) ReadRequestBody(p any) error {
 		return err
 	}
 
+	fmt.Printf("-> [%d] 0x%x\n", m.seq, buf)
+
 	if err := bu.UnmarshalBinary(buf); err != nil {
 		return err
 	}

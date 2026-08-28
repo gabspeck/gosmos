@@ -47,7 +47,7 @@ func TestReadRequestHeader(t *testing.T) {
 			routing: [2]byte{0x01, 0x00},
 		},
 		{
-			method:  "Pipes.ControlFrame",
+			method:  "Pipes.HandleControlFrame",
 			length:  [2]byte{0x05, 0x00},
 			routing: [2]byte{0xff, 0xff},
 		},
