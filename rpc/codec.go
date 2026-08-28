@@ -127,16 +127,20 @@ func (m *MosServerCodec) WriteResponse(r *rpc.Response, p any) error {
 		return err
 	}
 
-	payload := make([]byte, 4)
-
 	m.lock.Lock()
-	binary.LittleEndian.AppendUint16(payload, context.routing)
 	delete(m.pending, m.seq)
 	m.lock.Unlock()
 	response, err := bm.MarshalBinary()
 	if err != nil {
 		return err
 	}
+	// length (2) + cmd(1) + routing(2)
+	totalLen := uint16(5 + len(response))
+	payload := make([]byte, 5)
+	binary.LittleEndian.PutUint16(payload, totalLen)
+	payload[2] = context.cmd
+	binary.LittleEndian.PutUint16(payload[3:], context.routing)
+
 	payload = append(payload, response...)
 	fmt.Printf("<- [%d/%s]: 0x%x\n", r.Seq, r.ServiceMethod, payload)
 	_, err = m.conn.Write(payload)
