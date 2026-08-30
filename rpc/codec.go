@@ -49,6 +49,12 @@ func (m *MosServerCodec) ReadRequestBody(p any) error {
 		delete(m.pending, m.seq)
 		return m.Close()
 	}
+
+	ctx := m.pending[m.seq]
+
+	if pd, ok := p.(PipeDataRequest); ok {
+		pd.PipeIndex = ctx.routing
+	}
 	bu, ok := p.(encoding.BinaryUnmarshaler)
 	if !ok {
 		return fmt.Errorf("not an unmarshaler")
@@ -136,15 +142,22 @@ func (m *MosServerCodec) WriteResponse(r *rpc.Response, p any) error {
 	if err != nil {
 		return err
 	}
+	openPipeRequest := r.ServiceMethod == "Pipes.Open"
 	// length (2) + cmd(1) + routing(2)
-	totalLen := uint16(5 + len(response))
-	payload := make([]byte, 5)
+	prefixLen := 3
+	if !openPipeRequest {
+		prefixLen += 2
+	}
+	totalLen := uint16(prefixLen + len(response))
+	payload := make([]byte, prefixLen)
 	binary.LittleEndian.PutUint16(payload, totalLen)
 	payload[2] = context.cmd
-	binary.LittleEndian.PutUint16(payload[3:], context.routing)
+	if !openPipeRequest {
+		binary.LittleEndian.PutUint16(payload[3:], context.routing)
+	}
 
 	payload = append(payload, response...)
-	fmt.Printf("<- [%d/%s]: 0x%x\n", r.Seq, r.ServiceMethod, payload)
+	fmt.Printf("<- [%d/%s]: 0x%x (%d)\n", r.Seq, r.ServiceMethod, payload, len(payload))
 	_, err = m.conn.Write(payload)
 	if err != nil {
 		return err

@@ -55,7 +55,7 @@ func (f *fieldReader) terminated(term byte) []byte {
 		return nil
 	}
 	v := f.buf[:termIdx] // skip terminator
-	f.buf, f.fieldIndex = f.buf[termIdx:], f.fieldIndex+1
+	f.buf, f.fieldIndex = f.buf[termIdx+1:], f.fieldIndex+1
 	return v
 }
 
@@ -109,7 +109,7 @@ func (f *fieldReader) Done() error {
 		return f.err
 	}
 	if len(f.buf) > 0 {
-		return fmt.Errorf("unexpected trailing fields")
+		return fmt.Errorf("%d unexpected trailing bytes", len(f.buf))
 	}
 	return nil
 }

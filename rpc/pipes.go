@@ -2,6 +2,7 @@ package rpc
 
 import (
 	"bytes"
+	"encoding/binary"
 	"fmt"
 )
 
@@ -32,6 +33,8 @@ type (
 	}
 )
 
+const CommandPipeOpened = 0x0001
+
 func (c *ControlFrame) UnmarshalBinary(buf []byte) error {
 	f := fieldReader{buf: buf}
 	c.Type = f.Byte(false)
@@ -44,6 +47,17 @@ func (c *ControlFrame) MarshalBinary() (out []byte, err error) {
 	out = append(out, c.Content...)
 	err = nil
 	return
+}
+
+func (p *PipeOpenRequest) UnmarshalBinary(buf []byte) error {
+	f := fieldReader{buf: buf}
+	p.Reserved = f.Uint16(false)
+	p.PipeIndex = f.Uint16(false)
+	p.ServiceName = f.NarrowString()
+	p.Parameter = f.NarrowString()
+	p.Version = f.Uint32(false)
+
+	return f.Done()
 }
 
 const (
@@ -62,12 +76,34 @@ var defaultTransportParameters = []byte{
 
 func (p *PipeDataRequest) UnmarshalBinary(buf []byte) error {
 	f := &fieldReader{buf: buf}
-	p.PipeIndex = f.Uint16(true)
 	p.Data = f.Bytes(len(f.buf))
 	return f.Done()
 }
 
-func (p *Pipes) Open(PipeOpenRequest, *PipeOpenResponse) error {
+func (p *PipeOpenResponse) MarshalBinary() (out []byte, err error) {
+	out = make([]byte, 8)
+	binary.LittleEndian.PutUint16(out, p.PipeIndex)
+	binary.LittleEndian.PutUint16(out[2:], p.Command)
+	binary.LittleEndian.PutUint16(out[4:], p.ServerPipeIndex)
+	binary.LittleEndian.PutUint16(out[6:], p.Status)
+	err = nil
+	return
+}
+
+func (p *Pipes) Open(rq PipeOpenRequest, rs *PipeOpenResponse) error {
+	if rq.PipeIndex < 1 || rq.PipeIndex > 15 {
+		return fmt.Errorf("bad pipe index: %d", rq.PipeIndex)
+	}
+
+	// todo: validate if pipe is already open
+
+	rs.PipeIndex = rq.PipeIndex
+	rs.Command = CommandPipeOpened
+	rs.ServerPipeIndex = rq.PipeIndex
+	rs.Status = 0x0000
+
+	fmt.Printf("PipeOpenResponse: %v\n", rs)
+
 	return nil
 }
 
