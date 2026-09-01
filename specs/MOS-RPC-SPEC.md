@@ -100,8 +100,8 @@ field the caller expects in the reply.
 message while it is in flight, so that a receiver can tell partially received
 messages apart. It is not a pipe index (section 4.2.3). *(Select)*
 
-**record** — the unit of the Straight binding: a length, a command-byte echo,
-and one pipe message. *(Straight)*
+**record** — the framing of the Straight binding: a length, and one pipe unit
+written whole behind it. *(Straight)*
 
 **reply** — a host block returned for a call, repeating the call's class,
 method, and request identifier.
@@ -226,8 +226,8 @@ binding; see section 6.
 The protocol negotiates in three places:
 
 - **Transport parameters.** The server sends its packet size, window, and timer
-  values (section 2.2.3.1.2), which govern the Select binding; Straight ignores
-  them but the client still requires the message. Section 2.2.3.1.2 states how
+  values (section 2.2.3.1.3), which govern the Select binding; Straight ignores
+  them but the client still requires the message. Section 2.2.3.1.3 states how
   each peer applies them.
 - **Service version.** The pipe-open request names a service version (section
   2.2.3.2). There is no encoding for refusing an open: Command and Status carry
@@ -267,10 +267,12 @@ None. Interface identity uses GUIDs, which require no assignment authority.
 #### 2.1.1 Abstract Transport Service
 
 A transport binding carries **pipe units** between the two peers. A pipe unit is
-one pipe message (section 2.2.2). Each binding wraps it in a framing field of
-its own — a reassembly index on Select (section 4.2.3), an echo of the message's
-command byte on Straight (section 4.3.1) — and neither is addressing (section
-3.1.5.1).
+one pipe message together with the command code its sender's pipe layer assigned
+to that message (section 2.2.2). The message is what a binding MUST deliver; the
+command code rides along, and a binding that has nowhere to put it MAY drop it.
+Each binding adds framing of its own — a reassembly index on Select (section
+4.2.3), a length on Straight (section 4.3.1) — and neither that framing nor the
+command code is addressing (section 3.1.5.1).
 
 A binding MUST provide:
 
@@ -452,9 +454,22 @@ A message whose routing value is a pipe index carries the pipe-open response
 2.2.3.4) once it is open. Nothing in the message distinguishes the two; the
 receiver knows which it is from the state of the pipe.
 
+Every message a sender submits carries a **command code**, assigned by the
+sender's pipe layer: `0x01` for a pipe close (section 2.2.4), `0x00` for a
+message that carries no command — every control frame, every pipe open, every
+host block. The code labels the message; it is not a field of it, and it says
+nothing the message does not say for itself. A close is recognized by its
+content, and a receiver reads every command out of the message it parses
+(section 3.1.5.1). A sender MUST NOT assign any other value, a receiver MUST NOT
+require the code to arrive, and a receiver MUST NOT act on a code that disagrees
+with the message it labels. Whether it reaches the peer at all is the binding's
+affair: Select has nowhere to put it and drops it, Straight writes it beside the
+message (section 4.3.1).
+
 A pipe message MUST NOT exceed 65,532 bytes, the least any binding carries
 (section 2.1.1). The figure comes from the Straight binding, whose 16-bit
-TotalLength counts a 3-byte record header along with the message: 65,535 − 3.
+TotalLength counts the two bytes of the length itself and the command code along
+with the message: 65,535 − 3.
 Payloads larger than that are delivered as a sequence of host blocks on one
 request identifier (section 2.2.8.4), never as one message. On the
 Select binding ContentLength can express 65,535; a receiver MUST discard a
@@ -475,14 +490,18 @@ message whose declared length exceeds 65,532 rather than reassemble it (section
 | Type | Name | Direction |
 |---|---|---|
 | 1 | Connection request | client to server, echoed back |
+| 2 | Keep-alive | client to server, unanswered |
 | 3 | Transport parameters | server to client |
 | 4 | Connection established | client to server |
 
-Types 2 and 5 through 255 are unassigned. A receiver MUST discard a control
-frame of an unassigned type and MUST NOT treat it as an error: the connection
-continues, and bring-up is unaffected. A control frame carrying no type byte at
-all — a two-byte pipe message, the routing value alone — is discarded on the
-same rule.
+Types 5 through 255 are unassigned. A receiver MUST discard a control frame of
+an unassigned type and MUST NOT treat it as an error: the connection continues,
+and bring-up is unaffected. A control frame carrying no type byte at all — a
+two-byte pipe message, the routing value alone — is discarded on the same rule.
+
+Only types 1, 3 and 4 are acted on. A receiver reaching a type 2 takes the
+discard path above, which is the whole of the required handling for it
+(section 2.2.3.1.2).
 
 ###### 2.2.3.1.1 Connection Request (Type 1)
 
@@ -502,11 +521,111 @@ buffers to echo (section 6.2). A frame whose type-specific field exceeds that
 bound is discarded and not echoed; the client's bring-up then stalls on its own
 timeout, which is the same outcome as a lost frame.
 
-The client uses the field to carry a connection log — a modem description and
-the addresses it failed to reach, as `host!err|count|MMDDYYHHMM` records — which
-has no protocol meaning.
+**What the client puts there.** The field carries a report of the client's
+environment and of how it reached the server. None of it has protocol meaning —
+a server that ignores every byte behaves correctly — but its layout is fixed,
+and it is written out here so that an implementation can log it, and so that a
+server author can tell a well-formed request from a corrupted one:
 
-###### 2.2.3.1.2 Transport Parameters (Type 3)
+```
++-----------+----------+--------+---------+----------+---------+----------+
+| FormatVer | LineRate | Locale | ConnLog | LinkDesc | Elapsed | OS block |
++-----------+----------+--------+---------+----------+---------+----------+
+      4          4      variable variable   variable      4         28
+```
+
+| Field | Size | Description |
+|---|---|---|
+| FormatVer | 4 | 0x00000006. The only value defined. |
+| LineRate | 4 | Bit rate of the link, in bits per second. Zero where the link has no rate to report, which is every Straight connection; on Select over a modem it is the connect speed, for example 14400. |
+| Locale | variable | Regional settings. See below. |
+| ConnLog | variable | Connection log. See below. |
+| LinkDesc | variable | Link description. See below. |
+| Elapsed | 4 | Milliseconds between the client sending its type 4 frame (section 2.2.3.1.4) and composing this one — that is, how long the server took to answer with the transport parameters. |
+| OS block | 28 | Operating system. See below. |
+
+The three variable fields are NUL-terminated ASCII strings, written one after
+another with no length in front of any of them. Any of the three may be empty,
+in which case it is the NUL alone. The layout is therefore at least 43 bytes,
+and a receiver that logs it MUST find its three terminators before reading
+Elapsed rather than assume a fixed offset.
+
+**Locale.** Nine regional-settings values, each followed by `|`, in this order:
+country, currency, date format, time format, language, decimal separator,
+thousands separator, list separator, and the locale identifier as eight
+hexadecimal digits. A value the client could not read contributes an empty
+field, so a client that has only the locale identifier sends
+`||||||||00000409|` — nine fields of which the last alone is present.
+
+**ConnLog.** Zero or more records separated by CR (0x0D), each
+
+```
+target ! error | attempts | timestamp
+```
+
+where `error` is the numeric failure code, `attempts` is how many times that
+target failed, and `timestamp` is ten digits. `target` is free text naming what
+was tried: a single address, several separated by `;`, or the link description
+below when the failure was in dialling. It is empty when the failure had no
+address, leaving the record to begin at its `!`. The record separator is a CR,
+so on Select the field's own bytes are escape-encoded like any others
+(section 4.2.1.1).
+
+**LinkDesc.** The link the client came in on: on Select the number dialled, the
+driver, and the modem name, separated by single control bytes in the range 0x02
+to 0x08. Empty on Straight, which has nothing to describe.
+
+**OS block.** Seven little-endian 32-bit values, 28 bytes, always present and
+always the last thing in the field:
+
+| Field | Size | Description |
+|---|---|---|
+| LanguageId | 4 | Primary language identifier: the low ten bits of the locale identifier. |
+| Reserved | 4 | 0x00000001. |
+| Platform | 4 | 0 unknown, 1 for the Windows 9x family, 2 for Windows NT. |
+| MajorVersion | 4 | Major version. |
+| MinorVersion | 4 | Minor version. |
+| Build | 4 | Build number. On the 9x family its high half repeats the major and minor version, so 4.00.1111 is 0x04000457 and 4.00.950 is 0x040003B6. |
+| Reserved | 4 | 0x00000001. |
+
+**A receiver MUST NOT validate any of this.** The layout above describes what a
+client sends, not what a server may require. A server that rejected a frame for
+failing to match it would refuse a request a later client is free to change,
+and the echo rule at the top of this section — repeat the bytes, parse
+nothing — remains the whole of a server's obligation.
+
+###### 2.2.3.1.2 Keep-Alive (Type 2)
+
+```
++--------------+--------+
+| 0xFFFF       |  0x02  |
++--------------+--------+
+       2           1
+```
+
+The type-specific field is empty, and the message is three bytes. A client sends
+this frame when it has sent nothing else for a while, to keep an idle connection
+from being reaped by whatever sits between the two peers.
+
+**Nothing answers it.** A receiver MUST NOT reply, MUST NOT change any state on
+it, and MUST NOT count it against any per-pipe or per-call limit: the frame
+carries no field to act on, and its only effect is the traffic itself. A server
+that treated it as an error would drop connections that are working.
+
+**The interval is the client's own.** It is not the KeepAlive transport
+parameter of section 2.2.3.1.3, which belongs to the Select binding and drives
+acknowledgment packets rather than pipe messages (section 4.2.4). A client sends
+this frame after five minutes of having sent nothing, on either binding, and
+whether or not KeepAlive was negotiated; the timer restarts on every message the
+client sends, so a client that is doing anything at all never sends one. A
+server MUST NOT derive an idle timeout of its own from the interval, because
+nothing on the wire announces it and a client is free to choose another.
+
+The frame travels client to server. A server has no reason to send one — it
+speaks only in answer — and a client discards a type 2 it receives under the
+rule for unhandled types below.
+
+###### 2.2.3.1.3 Transport Parameters (Type 3)
 
 ```
 +--------+------+-----------+-----------+-----------+-----------+-----------+-----------+
@@ -561,7 +680,7 @@ Every binding MUST carry this message, and the server MUST send it as its first
 pipe message (section 3.1.3), even when the binding makes no use of the values.
 A client does not proceed past bring-up until it arrives.
 
-###### 2.2.3.1.3 Connection Established (Type 4)
+###### 2.2.3.1.4 Connection Established (Type 4)
 
 ```
 +--------------+--------+
@@ -1190,14 +1309,19 @@ Per connection:
 
 - **Binding**: the transport binding in use and its state (section 4).
 - **TransportParameters**: PacketSize, MaxBytes, WindowSize, AckBehind,
-  AckTimeout, and KeepAlive, as negotiated in section 2.2.3.1.2 and applied by
+  AckTimeout, and KeepAlive, as negotiated in section 2.2.3.1.3 and applied by
   the binding.
 - **OpenPipes**: the pipe indexes in use, and for each one whether it is opening
   or open. What a pipe is bound to is in section 3.2.1 or 3.3.1.
 
 #### 3.1.2 Timers
 
-None. Every timer in this protocol belongs to a binding (section 4.2.4). A
+**Keep-alive timer.** A client only. It runs for the life of the connection,
+restarts on every pipe message the client sends, and on expiry sends a type 2
+control frame (section 2.2.3.1.2) and restarts. Its period is five minutes. It
+is the one timer above the bindings; a server has none and needs none.
+
+Every other timer in this protocol belongs to a binding (section 4.2.4). A
 client MAY apply its own call timeout; the protocol defines none.
 
 #### 3.1.3 Connection Bring-Up
@@ -1206,9 +1330,9 @@ Bring-up begins once the binding reports the link up, and consists of four
 connection-level pipe messages, none of them on a pipe. Section 5.1 shows all
 four on both bindings:
 
-1. The client sends a type 4 control frame (section 2.2.3.1.3) as soon as the
+1. The client sends a type 4 control frame (section 2.2.3.1.4) as soon as the
    binding's framing is up, without waiting to be prompted.
-2. The server sends a type 3 control frame (section 2.2.3.1.2). It MUST be the
+2. The server sends a type 3 control frame (section 2.2.3.1.3). It MUST be the
    server's first pipe message, and the server MUST send it unprompted, without
    waiting for the client to speak first, once the binding's link initialization
    (section 4.2.5 or 4.3.3) has completed. On Select that initialization is
@@ -1218,8 +1342,17 @@ four on both bindings:
    2.2.3.1.1).
 4. The server echoes the type 1 body exactly.
 
-The connection is ready **at the client** when the echo returns with the body
-unchanged.
+The connection is ready **at the client** when the echo returns.
+
+**The client does not read the echo.** It discards the returned frame without
+looking at the type-specific field: the field carries a report the client
+composed itself (section 2.2.3.1.1), and nothing in bring-up needs it back. The
+client does not compare the echo against what it sent — not the bytes, and not
+the length; the only condition it puts on the frame is the four-byte floor every
+type 1 frame meets (section 2.2.3.1.1). A server MUST still echo the bytes
+exactly, because that obligation is what keeps the frame meaning one thing on
+every connection, but a server author debugging a stalled bring-up should look
+at whether the frame arrived at all, not at what it carried.
 
 Steps 1 and 2 are not ordered against each other and may cross on the link. A
 server MUST NOT wait for the type 4 before sending the parameters, and MUST
@@ -1278,10 +1411,10 @@ of the message and dispatch per section 2.2.2:
 Every discard above is silent. No error message exists at this layer and none is
 sent.
 
-Whatever framing field the binding reports, a receiver MUST route on the routing
-value. This is the one place that rule is stated; sections 2.2.2, 4.2.2 and
-4.3.1 refer to it. Neither binding's field carries a pipe number, and a receiver
-MUST NOT read one out of either.
+Whatever a binding reports alongside a message, a receiver MUST route on the
+routing value. This is the one place that rule is stated; sections 2.2.2, 4.2.2
+and 4.3.1 refer to it. Nothing a binding reports carries a pipe number, and a
+receiver MUST NOT read one out of anything but the message.
 
 On Select the field is a reassembly index (section 4.2.3): transmit state, taken
 free when a message begins and released when it completes. The number says only
@@ -1289,14 +1422,20 @@ which of the sixteen were free at the time, so two messages on one pipe
 routinely carry different indexes and two on different pipes carry the same
 one.
 
-On Straight the field echoes the pipe message's command byte (section 4.3.1)
-and is zero for every message that has none. A receiver that read it as a pipe
+Straight reports no such field. Its framing is a length (section 4.3.1), and the
+byte between that length and the message is the unit's command code (section
+2.2.2), which travels with the message rather than describing the connection:
+`0x01` on a close, `0x00` on everything else. A receiver that read it as a pipe
 number would address every call and every reply to a number that cannot name a
 pipe, and apply every close to pipe 1 (section 5.8).
 
 #### 3.1.6 Timer Events
 
-None. See section 4.2.10.
+**Keep-alive expiry.** At a client, send a type 2 control frame
+(section 2.2.3.1.2) and restart the timer. Nothing else happens: no state
+changes, and no answer is awaited. A server never sees this event.
+
+For the binding's own timers see section 4.2.10.
 
 #### 3.1.7 Other Local Events
 
@@ -1324,7 +1463,7 @@ In addition to section 3.1.1:
 
 #### 3.2.2 Timers
 
-None beyond section 3.1.2.
+None beyond section 3.1.2, whose keep-alive timer is a client's alone.
 
 #### 3.2.3 Initialization
 
@@ -1424,7 +1563,8 @@ the section that owns the field:
 | Rule | Section |
 |---|---|
 | Echo the type 1 control frame body exactly, without parsing it | 2.2.3.1.1 |
-| Send the transport parameters as the first pipe message, and what the values mean | 2.2.3.1.2, 3.1.3 |
+| Discard a type 2 keep-alive: no answer, no state change, no error | 2.2.3.1.2 |
+| Send the transport parameters as the first pipe message, and what the values mean | 2.2.3.1.3, 3.1.3 |
 | Route only on the routing value, never on the binding's framing field | 3.1.5.1 |
 | Repeat Class, Method, and RequestId in every reply, or the client discards it | 2.2.5.1, 3.2.5.2 |
 | End every reply's static section with the end-of-static tag | 2.2.8.2 |
@@ -1743,7 +1883,7 @@ run 0 through 127 and wrap.
 
 The minimum packet is seven bytes: Seq, Ack, an empty payload, the check field,
 and the terminator. The maximum is the negotiated PacketSize (section
-2.2.3.1.2), which counts every byte of the packet including the terminator.
+2.2.3.1.3), which counts every byte of the packet including the terminator.
 
 An empty packet — a terminator with nothing before it — is used during link
 initialization (section 4.2.5) and carries no other meaning.
@@ -2322,18 +2462,43 @@ spoken to.
 #### 4.3.1 Record
 
 ```
- 0            2        3
-+------------+--------+------------------------------+
-| TotalLength| Cmd    | Pipe message                 |
-+------------+--------+------------------------------+
-      2          1               0 .. 65532
+ 0            2
++------------+---------------------------------------+
+| TotalLength| Pipe unit                             |
++------------+---------------------------------------+
+      2                     1 .. 65533
 ```
 
 | Field | Size | Description |
 |---|---|---|
 | TotalLength | 2 | Little-endian byte count of the whole record, counting these two bytes. |
-| Cmd | 1 | A copy of the pipe message's command byte, for the messages the pipe layer builds with one: `0x01` on a pipe close (section 2.2.4). Zero on everything else — every control frame, every pipe open, every host block — and zero from a sender that has no command byte to echo. It duplicates a byte already in the message, so a receiver MUST ignore it and read the command from the content. |
+| Pipe unit | variable | One pipe unit (section 2.1.1), written whole. |
+
+TotalLength is the whole of the binding. The bytes behind it are the unit as the
+pipe layer submitted it — its command code, then its message — and the binding
+writes them through unread:
+
+```
+ 2        3
++--------+------------------------------+
+| Cmd    | Pipe message                 |
++--------+------------------------------+
+     1              0 .. 65532
+```
+
+| Field | Size | Description |
+|---|---|---|
+| Cmd | 1 | The message's command code (section 2.2.2): `0x01` on a pipe close, `0x00` on a message carrying no command. Assigned by the sender's pipe layer, not by the binding. |
 | Pipe message | variable | One complete pipe message (section 2.2.2). |
+
+This binding is the only one that puts a command code on the wire, and it neither
+sets nor consults the byte: a peer that framed a record with the wrong code
+would still be understood, because the receiving pipe layer takes the command
+from the message. The code labels the message rather than repeating a byte of
+it. On a close the two do coincide, the message's own content after the routing
+value being that same `0x01`; on every other message they are unrelated, Cmd
+holding `0x00` while offset 2 of the message holds a host block's Class byte,
+the low byte of a pipe-open response's Command field, or a control frame's type.
 
 One record carries one pipe unit, always whole. There is no fragmentation and no
 reassembly: a message the Select binding must split across several packets goes
@@ -2350,7 +2515,7 @@ Per connection:
 
 - **ReceiveBuffer**: bytes received and not yet consumed by a whole record.
 
-Nothing else. Every value in the transport parameters (section 2.2.3.1.2) is
+Nothing else. Every value in the transport parameters (section 2.2.3.1.3) is
 inert on this binding, and the connection keeps no sequence, window, or timer
 state.
 
@@ -2377,10 +2542,9 @@ parameters arrive.
 
 #### 4.3.4 Sending a Pipe Unit
 
-Emit `TotalLength = 3 + len(message)`, the command byte of section 4.3.1, and the
-message. Records
-are written back to back with nothing between them, and one record is written
-whole before the next begins (section 2.1.1).
+Emit `TotalLength = 3 + len(message)`, then the unit: its command code (section
+2.2.2) and its message. Records are written back to back with nothing between
+them, and one record is written whole before the next begins (section 2.1.1).
 
 #### 4.3.5 Receiving Records
 
@@ -2389,9 +2553,11 @@ whole before the next begins (section 2.1.1).
    3, the stream is unsynchronized: it carries no marker to resynchronize on, so
    the receiver MUST treat the connection as failed. If ReceiveBuffer holds
    fewer than TotalLength bytes, stop and wait for more.
-3. Take the record: byte 2 is the command-byte echo and is discarded, bytes 3
-   through TotalLength-1 are the pipe message. Deliver the message as one pipe
-   unit and remove the record from ReceiveBuffer.
+3. Take the record: byte 2 is the unit's command code and bytes 3 through
+   TotalLength-1 are its message. Deliver the unit to the pipe layer and remove
+   the record from ReceiveBuffer. A receiver that keeps no command code MAY drop
+   byte 2, which costs it nothing: the command is read from the message (section
+   3.1.5.1).
 
 A record may arrive split across any number of TCP segments, and several records
 may arrive in one. Neither is visible above this section.
@@ -2415,7 +2581,7 @@ frames them per section 4.
 | 5.5 | Fragmentation and reassembly (sections 4.2.8, 4.2.9) |
 | 5.6 | A chunked field and its deferred reply (sections 2.2.7.2, 3.3.5.3) |
 | 5.7 | An error reply (section 2.2.8.5) |
-| 5.8 | A pipe close, and the record byte that echoes its command (sections 2.2.4, 4.3.1) |
+| 5.8 | A pipe close, and the command code Straight carries beside it (sections 2.2.4, 4.3.1) |
 
 ### 5.1 Bring-Up
 
@@ -2446,11 +2612,37 @@ Client, connection established:
 ff ff 04
 ```
 
-Client, connection request, and the server's echo of it:
+Client, connection request, and the server's echo of it. This one reports no
+failed connections and no modem, so two of its three strings are empty:
 
 ```
-ff ff 01 01 00 00 00
+ff ff 01 06 00 00 00 00 00 00 00 7c 7c 7c 7c 7c
+7c 7c 7c 30 30 30 30 30 34 30 39 7c 00 00 00 0d
+00 00 00 09 00 00 00 01 00 00 00 01 00 00 00 04
+00 00 00 00 00 00 00 57 04 00 04 01 00 00 00
 ```
+
+| Bytes | Meaning |
+|---|---|
+| `ff ff` | Routing: control frame |
+| `01` | Control type 1, connection request |
+| `06 00 00 00` | FormatVer 6 |
+| `00 00 00 00` | LineRate 0: this client came in over Straight |
+| `7c … 7c 00` | Locale `\|\|\|\|\|\|\|\|00000409\|` |
+| `00` | ConnLog, empty |
+| `00` | LinkDesc, empty |
+| `0d 00 00 00` | Elapsed 13 ms |
+| `09 00 00 00` | LanguageId 9 |
+| `01 00 00 00` | Reserved |
+| `01 00 00 00` | Platform 1, the Windows 9x family |
+| `04 00 00 00` | MajorVersion 4 |
+| `00 00 00 00` | MinorVersion 0 |
+| `57 04 00 04` | Build 0x04000457, that is 4.00.1111 |
+| `01 00 00 00` | Reserved |
+
+The message is 63 bytes. A client that has a modem to describe or addresses it
+failed to reach sends the same layout with those two strings filled in, and the
+message grows by however many bytes they take.
 
 #### 5.1.1 Over Select
 
@@ -2497,8 +2689,27 @@ Server to client, the echo of the connection request, under its own sequence and
 acknowledgment numbers:
 
 ```
-81 82 e0 07 00 ff ff 01 01 00 00 00 40 60 42 74 0d
+81 82 e0 3f 00 ff ff 01 06 00 00 00 00 00 00 00
+7c 7c 7c 7c 7c 7c 7c 7c 30 30 30 30 30 34 30 39
+7c 00 00 00 1b 31 00 00 00 09 00 00 00 01 00 00
+00 01 00 00 00 04 00 00 00 00 00 00 00 57 04 00
+04 01 00 00 00 70 38 6d 5e 0d
 ```
+
+| Bytes | Meaning |
+|---|---|
+| `81` | Seq: bit 7 set, sequence 1 |
+| `82` | Ack: bit 7 set, expecting sequence 2 |
+| `e0` | Pipe header: reassembly index 0, Continuation, LastData |
+| `3f 00` | ContentLength 63 |
+| `ff ff 01 …` | The pipe message |
+| `1b 31` | The low byte of Elapsed, 0x0D, escape-encoded |
+| `70 38 6d 5e` | Check field |
+| `0d` | Terminator |
+
+The Elapsed value 13 collides with the packet terminator, so it is escaped like
+any other reserved byte. A body that carries a connection log escapes every one
+of that field's CR separators the same way.
 
 Server to client, acknowledgment of sequence 0:
 
@@ -2528,7 +2739,7 @@ The client connects and sends, with nothing before it:
 | Bytes | Meaning |
 |---|---|
 | `06 00` | TotalLength 6 |
-| `00` | Cmd: a control frame has no command byte to echo |
+| `00` | Cmd: the unit's command code; a control frame carries no command |
 | `ff ff 04` | The pipe message |
 
 Server to client, transport parameters:
@@ -2543,8 +2754,21 @@ The WindowSize byte 0x10 is transmitted as itself: this binding does not escape.
 Client to server, then server to client, the connection request and its echo:
 
 ```
-0a 00 00 ff ff 01 01 00 00 00
+42 00 00 ff ff 01 06 00 00 00 00 00 00 00 7c 7c
+7c 7c 7c 7c 7c 7c 30 30 30 30 30 34 30 39 7c 00
+00 00 0d 00 00 00 09 00 00 00 01 00 00 00 01 00
+00 00 04 00 00 00 00 00 00 00 57 04 00 04 01 00
+00 00
 ```
+
+| Bytes | Meaning |
+|---|---|
+| `42 00` | TotalLength 66 |
+| `00` | Cmd: the unit's command code; a control frame carries no command |
+| `ff ff 01 …` | The pipe message |
+
+The Elapsed byte 0x0D is transmitted as itself: this binding does not escape,
+and the record's own length is what ends it.
 
 ### 5.2 Opening a Service Pipe
 
@@ -2920,7 +3144,7 @@ Over Straight, one record of 14 bytes:
 ### 5.8 Closing a Pipe
 
 The client closes pipe 3. The pipe message is three bytes: the routing value of
-the pipe being closed, and the command byte.
+the pipe being closed, and the `0x01` that closes it.
 
 ```
 03 00 01
@@ -2954,12 +3178,14 @@ Over Straight, one record of 6 bytes:
 | Bytes | Meaning |
 |---|---|
 | `06 00` | TotalLength 6 |
-| `01` | Cmd: the close command byte, echoed from the message (section 4.3.1) |
+| `01` | Cmd: the unit's command code, `0x01` for a close (section 2.2.2) |
 | `03 00 01` | The pipe message: close pipe 3 |
 
-The `01` at byte 2 is the command byte, not pipe 1. It is the one place the
-Straight field is ever non-zero, and it is why a receiver that read the field as
-a pipe number would close pipe 1 here, leave pipe 3 open, and strand every call
+The `01` at byte 2 is the unit's command code, not pipe 1. A close is the one
+message that carries a command, so it is the one record whose code is non-zero,
+and the same value appears again as the message's third byte — the code labels
+the message, the third byte belongs to it. A receiver that took byte 2 for a
+pipe number would close pipe 1 here, leave pipe 3 open, and strand every call
 outstanding on it.
 
 No response is sent to a close on either binding. If this was the last service
@@ -3057,6 +3283,7 @@ normative: where it and a defining section differ, the defining section governs.
 | Type | Name |
 |---|---|
 | 1 | Connection request |
+| 2 | Keep-alive |
 | 3 | Transport parameters |
 | 4 | Connection established |
 
@@ -3109,6 +3336,9 @@ Defined in section 6.2, which also gives what a receiver does on a breach.
 |---|---|
 | Pipe close command | 0x01 |
 | Iterator cancel body | 0x0F |
+| Connection request FormatVer | 0x00000006 |
+| Connection request OS block | 28 bytes |
+| Keep-alive interval | 300,000 ms |
 
 ### 7.2 Select Binding
 
@@ -3154,7 +3384,7 @@ Defined in section 6.2, which also gives what a receiver does on a breach.
 
 **Negotiated parameters**
 
-Defined in section 2.2.3.1.2, which gives their defaults and how each peer
+Defined in section 2.2.3.1.3, which gives their defaults and how each peer
 applies them.
 
 ### 7.3 Straight Binding
@@ -3345,9 +3575,11 @@ enum CodecError {
     TYPE_MISMATCH;
 }
 
-/* A complete pipe unit at the abstract transport boundary. The binding's own
-   framing field is not part of it; see SelectPipeFrame and StraightRecord. */
+/* A complete pipe unit at the abstract transport boundary: the message and the
+   command code the pipe layer assigned it (section 2.2.2). A binding's own
+   framing is not part of it; see SelectPipeFrame and StraightRecord. */
 struct PipeUnit {
+    command: Byte; /* 0x01 on a pipe close, 0x00 otherwise; never routing */
     message: PipeMessageBytes;
 }
 
@@ -3827,15 +4059,15 @@ interface SelectOps {
 /* ---- Straight binding --------------------------------------------------- */
 
 const STRAIGHT_TCP_PORT: u16              = 569;
-const STRAIGHT_RECORD_HEADER_LENGTH: u32  = 3;
+const STRAIGHT_RECORD_HEADER_LENGTH: u32  = 3; /* TotalLength, then the unit's command code */
 const STRAIGHT_MAX_RECORD: u32            = 65535;
 
 type StraightTotalLength = u16 where 3 <= value;
 
-/* total_length is derived as 3 + len(message), not caller-supplied state. */
+/* total_length is derived as 3 + len(unit.message), not caller-supplied state.
+   The binding contributes the length and nothing else. */
 struct StraightRecord {
-    command_echo: Byte; /* the message's command byte, or 0; never routing */
-    message: PipeMessageBytes;
+    unit: PipeUnit;
 }
 
 struct StraightState {
