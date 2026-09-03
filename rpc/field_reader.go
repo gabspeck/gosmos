@@ -104,6 +104,41 @@ func (f *fieldReader) Bytes(n int) []byte {
 	return v
 }
 
+func (f *fieldReader) VLI() uint32 {
+	if f.err != nil {
+		return 0
+	}
+
+	const (
+		oneByte   = 0b00000000
+		twoBytes  = 0b10000000
+		fourBytes = 0b11000000
+	)
+	first := f.Byte(false)
+	formBits := first & 0b11000000
+
+	result := uint32(first & 0b00111111)
+
+	switch formBits {
+	case oneByte:
+		return result
+	case twoBytes:
+		second := f.Byte(false)
+		return result<<8 | uint32(second)
+	case fourBytes:
+		buf := make([]byte, 1, 4)
+		buf[0] = first
+		buf = append(buf, f.Bytes(3)...)
+		if f.err != nil {
+			return 0
+		}
+		return binary.BigEndian.Uint32(buf) & 0x3FFFFFFF
+	}
+
+	f.err = fmt.Errorf("invalid VLI form bits: 0b%s", fmt.Sprintf("%08b", formBits)[0:2])
+	return 0
+}
+
 func (f *fieldReader) Done() error {
 	if f.err != nil {
 		return f.err

@@ -4,9 +4,8 @@ import (
 	"fmt"
 	"log"
 	"net"
-	"net/rpc"
 
-	gosmosrpc "gabriels.io/gosmos/rpc"
+	"gabriels.io/gosmos/mos"
 )
 
 func main() {
@@ -14,10 +13,7 @@ func main() {
 	if err != nil {
 		log.Fatalln(err)
 	}
-	server := rpc.DefaultServer
-	if err = gosmosrpc.RegisterProcedures(server); err != nil {
-		log.Fatalln(err)
-	}
+	server := mos.NewServer()
 	for {
 		conn, err := l.Accept()
 		fmt.Printf("new connection from %s\n", conn.RemoteAddr())
@@ -25,6 +21,6 @@ func main() {
 			log.Println(err)
 			continue
 		}
-		go server.ServeCodec(gosmosrpc.NewMosServerCodec(conn))
+		go server.HandleConnection(conn)
 	}
 }

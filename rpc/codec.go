@@ -24,7 +24,7 @@ type MosServerCodec struct {
 type pendingRequestMap map[uint64]requestContext
 
 type requestContext struct {
-	routing uint16
+	routing RoutingValue
 	cmd     uint8
 }
 
@@ -52,8 +52,8 @@ func (m *MosServerCodec) ReadRequestBody(p any) error {
 
 	ctx := m.pending[m.seq]
 
-	if pd, ok := p.(PipeDataRequest); ok {
-		pd.PipeIndex = ctx.routing
+	if pd, ok := p.(PipeData); ok {
+		pd.pipeID = ctx.routing
 	}
 	bu, ok := p.(encoding.BinaryUnmarshaler)
 	if !ok {
@@ -110,7 +110,7 @@ func (m *MosServerCodec) ReadRequestHeader(r *rpc.Request) error {
 	m.len = size - len(header)
 	m.lock.Lock()
 	m.pending[r.Seq] = requestContext{
-		routing: routing,
+		routing: RoutingValue(routing),
 		cmd:     cmd,
 	}
 	m.lock.Unlock()
@@ -119,7 +119,7 @@ func (m *MosServerCodec) ReadRequestHeader(r *rpc.Request) error {
 
 // WriteResponse implements [rpc.ServerCodec].
 func (m *MosServerCodec) WriteResponse(r *rpc.Response, p any) error {
-	context, ok := m.pending[r.Seq]
+	_, ok := m.pending[r.Seq]
 	if r.Error != "" {
 		log.Println(r.Error)
 		return errors.New(r.Error)
@@ -142,20 +142,10 @@ func (m *MosServerCodec) WriteResponse(r *rpc.Response, p any) error {
 	if err != nil {
 		return err
 	}
-	openPipeRequest := r.ServiceMethod == "Pipes.Open"
-	// length (2) + cmd(1) + routing(2)
-	prefixLen := 3
-	if !openPipeRequest {
-		prefixLen += 2
-	}
+	prefixLen := 2
 	totalLen := uint16(prefixLen + len(response))
 	payload := make([]byte, prefixLen)
 	binary.LittleEndian.PutUint16(payload, totalLen)
-	payload[2] = context.cmd
-	if !openPipeRequest {
-		binary.LittleEndian.PutUint16(payload[3:], context.routing)
-	}
-
 	payload = append(payload, response...)
 	fmt.Printf("<- [%d/%s]: 0x%x (%d)\n", r.Seq, r.ServiceMethod, payload, len(payload))
 	_, err = m.conn.Write(payload)
