@@ -90,9 +90,6 @@ header byte, an optional length byte, and content. *(Select)*
 **pipe message** — the unit of the pipe layer: a routing value followed by
 content.
 
-**pipe unit** — the unit a transport binding carries: one pipe message, plus the
-framing field the binding wraps around it (section 2.1.1).
-
 **receive descriptor** — a tag in a request body that declares the type of one
 field the caller expects in the reply.
 
@@ -100,8 +97,8 @@ field the caller expects in the reply.
 message while it is in flight, so that a receiver can tell partially received
 messages apart. It is not a pipe index (section 4.2.3). *(Select)*
 
-**record** — the framing of the Straight binding: a length, and one pipe unit
-written whole behind it. *(Straight)*
+**record** — the unit of the Straight binding: a length, a command-byte echo, and
+one pipe message. *(Straight)*
 
 **reply** — a host block returned for a call, repeating the call's class,
 method, and request identifier.
@@ -266,24 +263,21 @@ None. Interface identity uses GUIDs, which require no assignment authority.
 
 #### 2.1.1 Abstract Transport Service
 
-A transport binding carries **pipe units** between the two peers. A pipe unit is
-one pipe message together with the command code its sender's pipe layer assigned
-to that message (section 2.2.2). The message is what a binding MUST deliver; the
-command code rides along, and a binding that has nowhere to put it MAY drop it.
-Each binding adds framing of its own — a reassembly index on Select (section
-4.2.3), a length on Straight (section 4.3.1) — and neither that framing nor the
-command code is addressing (section 3.1.5.1).
+A transport binding carries **pipe messages** between the two peers. Each binding
+wraps a message in a framing field of its own — a reassembly index on Select
+(section 4.2.3), an echo of the message's command byte on Straight (section
+4.3.1) — and neither is addressing (section 3.1.5.1).
 
 A binding MUST provide:
 
 | Property | Requirement | Discharged by |
 |---|---|---|
-| Boundaries | Each unit is delivered whole and separate. The receiver never sees two messages joined or one split. | Select: ContentLength (4.2.2, 4.2.9). Straight: TotalLength (4.3.1, 4.3.5). |
-| Order | Units are delivered in the order they were submitted, on each pipe and across pipes. | Select: sequence numbers (4.2.7). Straight: TCP. |
-| Atomicity | A peer MUST NOT interleave the frames of two pipe units that share a reassembly index. Frames on distinct indexes may interleave freely. | Select: one reassembly context per index (4.2.3). Straight: nothing to interleave, a record is always whole (4.3.1). |
-| Reliability | Every unit submitted is delivered exactly once, or the connection fails. | Select: retransmission and duplicate suppression (4.2.6, 4.2.7, 4.2.10). Straight: TCP. |
-| Bidirectionality | Either peer may submit a unit at any time once the binding reports the connection up. Bring-up order (section 3.1.3) constrains only bring-up. | Select: 4.2. Straight: TCP, full duplex. |
-| Capacity | At least 65,532 bytes of pipe message per unit. | Select: fragmentation (4.2.8). Straight: TotalLength (4.3.1). |
+| Boundaries | Each message is delivered whole and separate. The receiver never sees two messages joined or one split. | Select: ContentLength (4.2.2, 4.2.9). Straight: TotalLength (4.3.1, 4.3.5). |
+| Order | Messages are delivered in the order they were submitted, on each pipe and across pipes. | Select: sequence numbers (4.2.7). Straight: TCP. |
+| Atomicity | A peer MUST NOT interleave the frames of two pipe messages that share a reassembly index. Frames on distinct indexes may interleave freely. | Select: one reassembly context per index (4.2.3). Straight: nothing to interleave, a record is always whole (4.3.1). |
+| Reliability | Every message submitted is delivered exactly once, or the connection fails. | Select: retransmission and duplicate suppression (4.2.6, 4.2.7, 4.2.10). Straight: TCP. |
+| Bidirectionality | Either peer may submit a message at any time once the binding reports the connection up. Bring-up order (section 3.1.3) constrains only bring-up. | Select: 4.2. Straight: TCP, full duplex. |
+| Capacity | At least 65,532 bytes per pipe message. | Select: fragmentation (4.2.8). Straight: TotalLength (4.3.1). |
 | Failure | Loss of the link is reported to the pipe layer as one event. | Both: 4.1. |
 | Discard | On connection failure every partial message is discarded. A binding holds no per-pipe state and cannot be told to discard by pipe: it does not know which reassembly index, if any, a closing pipe's traffic was using. | Select: the reassembly table (4.2.3). Straight: nothing to discard. |
 
@@ -454,22 +448,9 @@ A message whose routing value is a pipe index carries the pipe-open response
 2.2.3.4) once it is open. Nothing in the message distinguishes the two; the
 receiver knows which it is from the state of the pipe.
 
-Every message a sender submits carries a **command code**, assigned by the
-sender's pipe layer: `0x01` for a pipe close (section 2.2.4), `0x00` for a
-message that carries no command — every control frame, every pipe open, every
-host block. The code labels the message; it is not a field of it, and it says
-nothing the message does not say for itself. A close is recognized by its
-content, and a receiver reads every command out of the message it parses
-(section 3.1.5.1). A sender MUST NOT assign any other value, a receiver MUST NOT
-require the code to arrive, and a receiver MUST NOT act on a code that disagrees
-with the message it labels. Whether it reaches the peer at all is the binding's
-affair: Select has nowhere to put it and drops it, Straight writes it beside the
-message (section 4.3.1).
-
 A pipe message MUST NOT exceed 65,532 bytes, the least any binding carries
 (section 2.1.1). The figure comes from the Straight binding, whose 16-bit
-TotalLength counts the two bytes of the length itself and the command code along
-with the message: 65,535 − 3.
+TotalLength counts a 3-byte record header along with the message: 65,535 − 3.
 Payloads larger than that are delivered as a sequence of host blocks on one
 request identifier (section 2.2.8.4), never as one message. On the
 Select binding ContentLength can express 65,535; a receiver MUST discard a
@@ -1376,9 +1357,8 @@ against a client that pipelines, and nothing in this protocol would say so.
 
 #### 3.1.4 Higher-Layer Triggered Events
 
-**Sending a pipe message.** The pipe layer hands the binding one pipe unit: the
-destination pipe index and the message. What the binding does with it is section
-4.
+**Sending a pipe message.** The pipe layer hands the binding one pipe message.
+What the binding does with it is section 4.
 
 **Closing a pipe.** The peer sends the pipe-close message of section 2.2.4 and
 discards the pipe's state. Nothing is said to the binding: a close is a pipe
@@ -1392,7 +1372,7 @@ when the connection ends.
 
 ##### 3.1.5.1 Routing a Pipe Message
 
-The binding delivers a pipe unit. Read the two-byte routing value at the start
+The binding delivers a pipe message. Read the two-byte routing value at the start
 of the message and dispatch per section 2.2.2:
 
 | Message | Action |
@@ -1411,10 +1391,10 @@ of the message and dispatch per section 2.2.2:
 Every discard above is silent. No error message exists at this layer and none is
 sent.
 
-Whatever a binding reports alongside a message, a receiver MUST route on the
-routing value. This is the one place that rule is stated; sections 2.2.2, 4.2.2
-and 4.3.1 refer to it. Nothing a binding reports carries a pipe number, and a
-receiver MUST NOT read one out of anything but the message.
+Whatever framing field the binding reports, a receiver MUST route on the routing
+value. This is the one place that rule is stated; sections 2.2.2, 4.2.2 and 4.3.1
+refer to it. Neither binding's field carries a pipe number, and a receiver MUST
+NOT read one out of either.
 
 On Select the field is a reassembly index (section 4.2.3): transmit state, taken
 free when a message begins and released when it completes. The number says only
@@ -1422,12 +1402,10 @@ which of the sixteen were free at the time, so two messages on one pipe
 routinely carry different indexes and two on different pipes carry the same
 one.
 
-Straight reports no such field. Its framing is a length (section 4.3.1), and the
-byte between that length and the message is the unit's command code (section
-2.2.2), which travels with the message rather than describing the connection:
-`0x01` on a close, `0x00` on everything else. A receiver that read it as a pipe
-number would address every call and every reply to a number that cannot name a
-pipe, and apply every close to pipe 1 (section 5.8).
+On Straight the field echoes the pipe message's command byte (section 4.3.1) and
+is zero for every message that has none. A receiver that read it as a pipe number
+would address every call and every reply to a number that cannot name a pipe, and
+every close to pipe 1 (section 5.8).
 
 #### 3.1.6 Timer Events
 
@@ -1572,7 +1550,7 @@ the section that owns the field:
 | Emit only the five wire error values, in the shape `8f xx xx xx xx 87` | 2.2.8.5 |
 | Answer an iterator cancel unconditionally | 2.2.9 |
 | Enforce every protocol and binding bound | 6.2 |
-| Never interleave the frames of two pipe units | 2.1.1 |
+| Never interleave the frames of two pipe messages | 2.1.1 |
 
 #### 3.3.1 Abstract Data Model
 
@@ -1813,7 +1791,7 @@ endpoint answers a Straight client with packets, which it cannot parse.
 
 ### 4.2 Select Binding
 
-The Select binding carries pipe units over one bidirectional byte stream, and
+The Select binding carries pipe messages over one bidirectional byte stream, and
 provides its own framing, error detection, retransmission, and fragmentation. It
 takes nothing from the link beyond ordered delivery of bytes.
 
@@ -2063,7 +2041,7 @@ handle one on receipt (section 4.2).
 #### 4.2.2 Pipe Frame
 
 A packet payload holds one or more pipe frames laid end to end. A frame carries
-one pipe unit, or part of one.
+one pipe message, or part of one.
 
 ```
  0            1              1 or 2
@@ -2351,7 +2329,7 @@ not added to UnacknowledgedPackets, and do not start the retransmission timer.
    peer that emits a standalone acknowledgment for every packet the moment it
    arrives — before processing the payload, having already advanced
    ExpectedSequence — is equally conforming and costs only the extra packets.
-10. Decode the payload per section 4.2.9 and deliver the pipe units it
+10. Decode the payload per section 4.2.9 and deliver the pipe messages it
     completes.
 
 #### 4.2.8 Fragmenting a Pipe Message
@@ -2425,7 +2403,7 @@ For each pipe frame in the decoded payload:
    BytesOutstanding is truncated to it (section 6.2); the surplus belongs to no
    message and the receiver MUST NOT read a frame header out of it.
 5. If BytesOutstanding is now zero, the message is complete: deliver Buffer as a
-   pipe unit and clear the context.
+   pipe message and clear the context.
 6. Advance to the next frame at the first byte the current frame did not consume.
 
 A receiver MUST NOT assume a continuation frame owns the rest of the packet: a
@@ -2449,7 +2427,7 @@ disappeared or stopped being reachable.
 
 ### 4.3 Straight Binding
 
-The Straight binding carries pipe units over a TCP connection. TCP already
+The Straight binding carries pipe messages over a TCP connection. TCP already
 delivers bytes in order, once, and checked, so the binding adds only the
 boundaries the service of section 2.1.1 requires: there are no sequence numbers,
 no acknowledgments, no escape encoding, no check field, and no terminator.
@@ -2462,49 +2440,24 @@ spoken to.
 #### 4.3.1 Record
 
 ```
- 0            2
-+------------+---------------------------------------+
-| TotalLength| Pipe unit                             |
-+------------+---------------------------------------+
-      2                     1 .. 65533
+ 0            2        3
++------------+--------+------------------------------+
+| TotalLength| Cmd    | Pipe message                 |
++------------+--------+------------------------------+
+      2          1               0 .. 65532
 ```
 
 | Field | Size | Description |
 |---|---|---|
 | TotalLength | 2 | Little-endian byte count of the whole record, counting these two bytes. |
-| Pipe unit | variable | One pipe unit (section 2.1.1), written whole. |
-
-TotalLength is the whole of the binding. The bytes behind it are the unit as the
-pipe layer submitted it — its command code, then its message — and the binding
-writes them through unread:
-
-```
- 2        3
-+--------+------------------------------+
-| Cmd    | Pipe message                 |
-+--------+------------------------------+
-     1              0 .. 65532
-```
-
-| Field | Size | Description |
-|---|---|---|
-| Cmd | 1 | The message's command code (section 2.2.2): `0x01` on a pipe close, `0x00` on a message carrying no command. Assigned by the sender's pipe layer, not by the binding. |
+| Cmd | 1 | A copy of the pipe message's command byte, for the messages the pipe layer builds with one: `0x01` on a pipe close (section 2.2.4). Zero on everything else — every control frame, every pipe open, every host block — and zero from a sender that has no command byte to echo. It duplicates a byte already in the message, so a receiver MUST ignore it and read the command from the content. |
 | Pipe message | variable | One complete pipe message (section 2.2.2). |
 
-This binding is the only one that puts a command code on the wire, and it neither
-sets nor consults the byte: a peer that framed a record with the wrong code
-would still be understood, because the receiving pipe layer takes the command
-from the message. The code labels the message rather than repeating a byte of
-it. On a close the two do coincide, the message's own content after the routing
-value being that same `0x01`; on every other message they are unrelated, Cmd
-holding `0x00` while offset 2 of the message holds a host block's Class byte,
-the low byte of a pipe-open response's Command field, or a control frame's type.
-
-One record carries one pipe unit, always whole. There is no fragmentation and no
-reassembly: a message the Select binding must split across several packets goes
-into one record here, and a sender MUST NOT split one message across records. A
-receiver takes each record as a complete pipe message, so a second record is
-parsed as a fresh routing value and host block.
+One record carries one pipe message, always whole. There is no fragmentation
+and no reassembly: a message the Select binding must split across several
+packets goes into one record here, and a sender MUST NOT split one message
+across records. A receiver takes each record as a complete pipe message, so a
+second record is parsed as a fresh routing value and host block.
 
 PacketSize does not bound a record. TotalLength is the only ceiling, so a record
 holds at most 65,532 bytes of pipe message.
@@ -2540,11 +2493,11 @@ Server -> record, control type 1      echo
 The client sends its type 4 without waiting and sends nothing further until the
 parameters arrive.
 
-#### 4.3.4 Sending a Pipe Unit
+#### 4.3.4 Sending a Pipe Message
 
-Emit `TotalLength = 3 + len(message)`, then the unit: its command code (section
-2.2.2) and its message. Records are written back to back with nothing between
-them, and one record is written whole before the next begins (section 2.1.1).
+Emit `TotalLength = 3 + len(message)`, the command byte of section 4.3.1, and the
+message. Records are written back to back with nothing between them, and one
+record is written whole before the next begins (section 2.1.1).
 
 #### 4.3.5 Receiving Records
 
@@ -2553,11 +2506,9 @@ them, and one record is written whole before the next begins (section 2.1.1).
    3, the stream is unsynchronized: it carries no marker to resynchronize on, so
    the receiver MUST treat the connection as failed. If ReceiveBuffer holds
    fewer than TotalLength bytes, stop and wait for more.
-3. Take the record: byte 2 is the unit's command code and bytes 3 through
-   TotalLength-1 are its message. Deliver the unit to the pipe layer and remove
-   the record from ReceiveBuffer. A receiver that keeps no command code MAY drop
-   byte 2, which costs it nothing: the command is read from the message (section
-   3.1.5.1).
+3. Take the record: byte 2 is the command-byte echo and is discarded, bytes 3
+   through TotalLength-1 are the pipe message. Deliver the message to the pipe
+   layer and remove the record from ReceiveBuffer.
 
 A record may arrive split across any number of TCP segments, and several records
 may arrive in one. Neither is visible above this section.
@@ -2581,7 +2532,7 @@ frames them per section 4.
 | 5.5 | Fragmentation and reassembly (sections 4.2.8, 4.2.9) |
 | 5.6 | A chunked field and its deferred reply (sections 2.2.7.2, 3.3.5.3) |
 | 5.7 | An error reply (section 2.2.8.5) |
-| 5.8 | A pipe close, and the command code Straight carries beside it (sections 2.2.4, 4.3.1) |
+| 5.8 | A pipe close, and the record byte that echoes its command (sections 2.2.4, 4.3.1) |
 
 ### 5.1 Bring-Up
 
@@ -2739,7 +2690,7 @@ The client connects and sends, with nothing before it:
 | Bytes | Meaning |
 |---|---|
 | `06 00` | TotalLength 6 |
-| `00` | Cmd: the unit's command code; a control frame carries no command |
+| `00` | Cmd: a control frame has no command byte to echo |
 | `ff ff 04` | The pipe message |
 
 Server to client, transport parameters:
@@ -2764,7 +2715,7 @@ Client to server, then server to client, the connection request and its echo:
 | Bytes | Meaning |
 |---|---|
 | `42 00` | TotalLength 66 |
-| `00` | Cmd: the unit's command code; a control frame carries no command |
+| `00` | Cmd: a control frame has no command byte to echo |
 | `ff ff 01 …` | The pipe message |
 
 The Elapsed byte 0x0D is transmitted as itself: this binding does not escape,
@@ -3022,7 +2973,7 @@ The receiver's reassembly state (section 4.2.3) across the three packets:
 | start | — | empty | 0 | — |
 | packet 1 | 5 | 1014 bytes | 1046 | — |
 | packet 2 | 5 | 2030 bytes | 30 | — |
-| packet 3 | 5 | 2060 bytes | 0 | the 2060-byte pipe unit; its routing value names pipe 5 |
+| packet 3 | 5 | 2060 bytes | 0 | the 2060-byte pipe message; its routing value names pipe 5 |
 
 The message completes when BytesOutstanding reaches zero, not when LastData
 arrives. Had the sender cleared LastData on packet 3 by mistake, the message
@@ -3045,7 +2996,7 @@ Over Straight it is one record of 2063 bytes:
 | Bytes | Meaning |
 |---|---|
 | `0f 08` | TotalLength 2063 |
-| `05` | Pipe 5 |
+| `00` | Cmd: the message has no command byte to echo |
 | `05 00` | Routing: pipe 5 |
 | `03 …` | Host block |
 
@@ -3144,7 +3095,7 @@ Over Straight, one record of 14 bytes:
 ### 5.8 Closing a Pipe
 
 The client closes pipe 3. The pipe message is three bytes: the routing value of
-the pipe being closed, and the `0x01` that closes it.
+the pipe being closed, and the command byte.
 
 ```
 03 00 01
@@ -3178,14 +3129,12 @@ Over Straight, one record of 6 bytes:
 | Bytes | Meaning |
 |---|---|
 | `06 00` | TotalLength 6 |
-| `01` | Cmd: the unit's command code, `0x01` for a close (section 2.2.2) |
+| `01` | Cmd: the close command byte, echoed from the message (section 4.3.1) |
 | `03 00 01` | The pipe message: close pipe 3 |
 
-The `01` at byte 2 is the unit's command code, not pipe 1. A close is the one
-message that carries a command, so it is the one record whose code is non-zero,
-and the same value appears again as the message's third byte — the code labels
-the message, the third byte belongs to it. A receiver that took byte 2 for a
-pipe number would close pipe 1 here, leave pipe 3 open, and strand every call
+The `01` at byte 2 is the command byte, not pipe 1. It is the one place the
+Straight field is ever non-zero, and it is why a receiver that read the field as
+a pipe number would close pipe 1 here, leave pipe 3 open, and strand every call
 outstanding on it.
 
 No response is sent to a close on either binding. If this was the last service
@@ -3575,14 +3524,6 @@ enum CodecError {
     TYPE_MISMATCH;
 }
 
-/* A complete pipe unit at the abstract transport boundary: the message and the
-   command code the pipe layer assigned it (section 2.2.2). A binding's own
-   framing is not part of it; see SelectPipeFrame and StraightRecord. */
-struct PipeUnit {
-    command: Byte; /* 0x01 on a pipe close, 0x00 otherwise; never routing */
-    message: PipeMessageBytes;
-}
-
 /* The raw pipe-layer unit. Interpretation of content depends on routing/state. */
 struct PipeMessage {
     routing: RoutingValue;
@@ -3854,11 +3795,11 @@ interface TransportBindingOps {
         parameters: TransportParameters
     ) -> void;
 
-    fn send(binding: TransportBinding, unit: PipeUnit)
+    fn send(binding: TransportBinding, message: PipeMessageBytes)
         -> result<void,TransportFailure>;
 
     fn receive(binding: TransportBinding)
-        -> result<PipeUnit,TransportFailure>;
+        -> result<PipeMessageBytes,TransportFailure>;
 
     /* Select: clear the one connection-wide reassembly context. Straight: no-op. */
     fn discard_partial(binding: TransportBinding) -> void;
@@ -3984,7 +3925,7 @@ struct SelectTimerArm {
 
 union SelectReceiveAction {
     write_packet(SelectPacketWireBytes);
-    deliver_pipe_unit(PipeUnit);
+    deliver_pipe_message(PipeMessageBytes);
     start_timer(SelectTimerArm);
     stop_timer(SelectTimerKind);
     reset_timer(SelectTimerArm);
@@ -4031,9 +3972,9 @@ interface SelectOps {
         bytes_outstanding: u32
     ) -> result<Decoded<SelectPipeFrame>,CodecError>;
 
-    fn fragment_pipe_unit(
+    fn fragment_pipe_message(
         state: inout SelectState,
-        unit: PipeUnit
+        message: PipeMessageBytes
     ) -> result<list<SelectPacketWireBytes>,TransportFailure>;
 
     fn receive_packet(
@@ -4059,15 +4000,15 @@ interface SelectOps {
 /* ---- Straight binding --------------------------------------------------- */
 
 const STRAIGHT_TCP_PORT: u16              = 569;
-const STRAIGHT_RECORD_HEADER_LENGTH: u32  = 3; /* TotalLength, then the unit's command code */
+const STRAIGHT_RECORD_HEADER_LENGTH: u32  = 3; /* TotalLength and the command-byte echo */
 const STRAIGHT_MAX_RECORD: u32            = 65535;
 
 type StraightTotalLength = u16 where 3 <= value;
 
-/* total_length is derived as 3 + len(unit.message), not caller-supplied state.
-   The binding contributes the length and nothing else. */
+/* total_length is derived as 3 + len(message), not caller-supplied state. */
 struct StraightRecord {
-    unit: PipeUnit;
+    command_echo: Byte; /* the message's command byte, or 0; never routing */
+    message: PipeMessageBytes;
 }
 
 struct StraightState {
@@ -4093,7 +4034,7 @@ interface StraightOps {
     fn feed(
         state: inout StraightState,
         input: bytes
-    ) -> result<list<PipeUnit>,TransportFailure>;
+    ) -> result<list<PipeMessageBytes>,TransportFailure>;
 }
 
 } /* namespace transport */
@@ -4254,7 +4195,7 @@ struct ServerInvocation {
 
 /* Effects are protocol-visible consequences; their execution policy is external. */
 union ProtocolEffect {
-    send_pipe_unit(PipeUnit);
+    send_pipe_message(PipeMessageBytes);
     apply_transport_parameters(TransportParameters);
     discard_transport_partial(void);
     close_transport(void);
@@ -4354,14 +4295,14 @@ interface ProtocolOps {
         binding: TransportBinding
     ) -> result<TransitionResult<ServerState>,ErrorCode>;
 
-    fn client_receive_unit(
+    fn client_receive_message(
         state: inout ClientState,
-        unit: PipeUnit
+        message: PipeMessageBytes
     ) -> list<ProtocolEffect>;
 
-    fn server_receive_unit(
+    fn server_receive_message(
         state: inout ServerState,
-        unit: PipeUnit,
+        message: PipeMessageBytes,
         services: ServiceRegistry
     ) -> list<ProtocolEffect>;
 

@@ -1,0 +1,393 @@
+---
+title: MOS RPC protocol data model
+---
+classDiagram
+    direction LR
+    %% Generated from the same table as specs/mos-rpc-models.svg.
+    %% Field rows read  name : type constraint  per the Notation class.
+    %% Each class annotation ends with the side that emits it: client, server, or both.
+
+    class Packet {
+        <<Select 4.2.1 · both>>
+        Seq : u8  =0x41|0x42, else data
+        Ack : u8  =xform of exp|0x80
+        Payload : PipeFrame[0..n]  escaped 4.2.1.1
+        Check : u32le  crc32 b[0..n-6], masked
+        Terminator : u8  =0x0D
+        inv data Seq =xform of seq|0x80
+        inv sizeof in 7..PacketSize
+        inv empty packet =0D alone, link init
+    }
+    class AcknowledgmentPacket {
+        <<Seq =0x41 · both>>
+        ↑ 0x41 : u8  literal, no xform
+        Ack : u8  =xform of exp|0x80
+        Check : u32le
+        Terminator : u8  =0x0D
+        inv sizeof =7
+    }
+    class NegativeAckPacket {
+        <<Seq =0x42 · both>>
+        ↑ 0x42 : u8  literal, no xform
+        Seq : u8  =xform of lastgood|0x80
+        Check : u32le
+        Terminator : u8  =0x0D
+        inv sizeof =7
+    }
+    class PipeFrame {
+        <<Select 4.2.2 · both>>
+        PipeHeader : u8  bit7=1
+        ReassemblyIndex : b[3..0]  0..15
+        HasLength : b[4]
+        Continuation : b[5]
+        LastData : b[6]
+        Length? : u8  bit7=1, n=b[6..0] 0..127
+        Content : u8[0..n]  n=Length or to end
+        ContentLength? : u16le  0..65532
+        inv HasLength xor Continuation
+        inv ContentLength on first frame only
+        inv PipeHeader and Length are xformed
+        inv complete on ContentLength, not LastData
+    }
+    class Record {
+        <<Straight 4.3.1 · both>>
+        TotalLength : u16le  =3+len msg, 3..65535
+        Cmd : u8  0x00|0x01 ×2
+        Message : PipeMessage  =TotalLength-3
+        inv Cmd =0x01 iff PipeClose, else 0x00
+        inv Cmd duplicates a byte of the message
+    }
+    class PipeMessage {
+        <<2.2.2 · both>>
+        RoutingValue : u16le
+        Content : u8[0..65530]
+        inv sizeof <= 65532
+        inv 0x0010..0xFFFE unassigned -> discard
+    }
+    class VariableLengthInteger {
+        <<2.2.1.2  big-endian>>
+        b[7..6]=00 : u8 & 0x3F  0..63
+        b[7..6]=10 : u16be & 0x3FFF  0..16383
+        b[7..6]=11 : u32be & 0x3FFFFFFF  0..2^30-1
+        b[7..6]=01 : invalid, discard host block
+        inv encode widens at 63 and 16383
+        inv 0x3FFFFFFF not encodable
+        inv decoder accepts non-shortest forms
+    }
+    class VariableFieldSize {
+        <<2.2.1.3>>
+        b[7]=1 : u8 & 0x7F  0..127
+        b[7]=0 : u16be  0..32767
+        inv encode widens at 127
+        inv len >= 32767 must be chunked
+        inv decoder accepts non-shortest forms
+        inv len <= bytes left in host block
+    }
+    class InterfaceGuid {
+        <<2.2.1.4>>
+        Data1 : u32le
+        Data2 : u16le
+        Data3 : u16le
+        Data4 : u8[8]
+        inv sizeof =16, compared bytewise
+    }
+    class PipeData {
+        <<routing 0x1..0xF, open · both>>
+        ↑ PipeIndex : u16le  1..15
+        Body : HostBlock
+    }
+    class PipeOpenRequest {
+        <<routing 0x0000 · client>>
+        ↑ Routing : u16le  =0x0000
+        Reserved : u16le  =0 on send, ignored
+        PipeIndex : u16le  1..15
+        ServiceName : cstr  len <= 256, casefold
+        Parameter : cstr  len <= 256
+        Version : u32le
+        inv malformed or index in use -> discard
+    }
+    class PipeOpenResponse {
+        <<routing 0x1..0xF, opening · server>>
+        ↑ PipeIndex : u16le  1..15
+        Command : u16le  =0x0001
+        ServerPipeIndex : u16le  =PipeIndex ×2
+        Status : u16le  =0x0000
+        inv sizeof =8
+        inv first message on a newly opened pipe
+    }
+    class PipeClose {
+        <<2.2.4 · both>>
+        ↑ PipeIndex : u16le  1..15
+        Cmd : u8  =0x01
+        inv sizeof =3, no response
+    }
+    class ControlFrame {
+        <<routing 0xFFFF · both>>
+        ↑ Routing : u16le  =0xFFFF
+        Type : u8  1..4, else discard
+        TypeSpecific : u8[0..4096]
+    }
+    class HostBlock {
+        <<2.2.5 · both>>
+        Class : u8
+        inv stream test is Class >= 0xE0
+    }
+    class ConnectionRequest {
+        <<type 1, echoed verbatim · both>>
+        FormatVer : u32le  =0x00000006
+        LineRate : u32le  =0 on Straight
+        Locale : cstr  9 fields, sep 0x7C
+        ConnLog : cstr  records sep 0x0D
+        LinkDesc : cstr  seps 0x02..0x08
+        Elapsed : u32le  ms
+        OSBlock : OSBlock
+        inv TypeSpecific >= 4, echoed exactly
+        inv layout >= 43 bytes, never validated
+    }
+    class OSBlock {
+        <<28 bytes · both>>
+        LanguageId : u32le  =LCID & 0x3FF
+        Reserved0 : u32le  =0x00000001
+        Platform : u32le  0|1|2
+        MajorVersion : u32le
+        MinorVersion : u32le
+        Build : u32le
+        Reserved1 : u32le  =0x00000001
+        inv sizeof =28
+    }
+    class KeepAlive {
+        <<type 2 · client>>
+        ↑ Routing : u16le  =0xFFFF
+        ↑ Type : u8  =0x02
+        inv sizeof =3, no reply, no state
+        inv sent after 300000 ms of silence
+    }
+    class TransportParameters {
+        <<type 3 · server>>
+        PacketSize : u32le  dflt 1024
+        MaxBytes : u32le  dflt 1024
+        WindowSize : u32le  dflt 16
+        AckBehind : u32le  dflt 1
+        AckTimeout : u32le  ms, dflt 600
+        KeepAlive? : u32le  ms
+        inv sizeof =23|27
+        inv apply min of received and own
+    }
+    class ConnectionEstablished {
+        <<type 4 · client>>
+        ↑ Routing : u16le  =0xFFFF
+        ↑ Type : u8  =0x04
+        inv sizeof =3, client sends first
+    }
+    class InterfaceTable {
+        <<Class 0x00 · server>>
+        ↑ Class : u8  =0x00
+        Method : u8  =0x00
+        RequestId : vli  =0
+        Records : InterfaceRecord[1..n]
+        inv withheld table = the open is refused
+    }
+    class InterfaceRecord {
+        <<17 bytes · server>>
+        InterfaceGuid : guid
+        Interface : u8  0x01..0xDF
+        inv unique per table, per pipe
+    }
+    class CallBlock {
+        <<Class 0x01..0xDF · both>>
+        ↑ Class : u8  0x01..0xDF
+        Method : u8
+        RequestId : vli
+        Body : Request | Reply | 0x0F
+        inv reply echoes all three
+        inv RequestId unique while live
+        inv unresolved Class -> discard, no reply
+    }
+    class StreamFrame {
+        <<Class 0xE6 or 0xE7 · client>>
+        ↑ Class : u8  0xE6 more | 0xE7 last
+        StreamId : u8  keyed per connection
+        FieldBytes : u8[0..n]
+        inv one-way, never answered
+        inv frames only on the referencing pipe
+    }
+    class IteratorCancel {
+        <<body =0x0F · both>>
+        ↑ Header : =Class, Method, RequestId
+        Body : u8  =0x0F
+        Answer : u8[2]  =87 88
+        inv answered unconditionally
+    }
+    class RequestParameters {
+        <<2.2.7 request body · client>>
+        Send : SendParameter[0..16]
+        Recv : ReceiveDescriptor[0..16]
+        inv send first, interleave accepted
+    }
+    class ReplyParameters {
+        <<2.2.8 reply body · server>>
+        Static : StaticField[0..16]
+        EndOfStatic : u8  =0x87
+        PostStatic : StaticField[0..n]  tag =0x84
+        Dynamic? : DynamicSection
+        inv static on first block only
+        inv 0x87 present even when static empty
+    }
+    class SendParameter {
+        <<2.2.7.1  tag b[7]=0 · client>>
+        0x01 : u8
+        0x02 : u16le
+        0x03 : u32le
+        0x04 : vsize + u8[0..32766]
+        0x44 : vsize + CompressedContent
+        0x05 : ChunkedFieldReference
+        0x45 : ChunkedFieldReference -> Compressed
+        inv match the whole tag byte, never bit 6
+        inv unassigned tag -> stop, 0xE0000007
+    }
+    class ChunkedFieldReference {
+        <<tag 0x05 or 0x45 · client>>
+        ↑ Tag : u8  0x05|0x45
+        StreamId : u8  unique per connection
+        Length : u32le  <= 16777216
+        inv sizeof =6
+        inv live StreamId reused -> 0xE0000009
+    }
+    class CompressedContent {
+        <<tag 0x44 or 0x45, request only · client>>
+        BlockLength : u32le
+        Block : u8[BlockLength]
+        inv repeats to end of field
+        inv expand Block =32768 but last
+        inv codec undefined here, agreed out of band
+    }
+    class ReceiveDescriptor {
+        <<2.2.7.3  tag b[7]=1 · client>>
+        0x81 : u8
+        0x82 : u16le
+        0x83 : u32le
+        0x84 : vsize + u8[0..32766]
+        0x85 : DynamicSection
+        inv tag alone, no field
+        inv unknown descriptor ignored, parse on
+    }
+    class StaticField {
+        <<2.2.8.1 · server>>
+        0x81 : u8
+        0x82 : u16le
+        0x83 : u32le
+        0x84 : vsize + u8[0..32766]
+        0x8F : u32le  error
+    }
+    class ErrorField {
+        <<2.2.8.5 · server>>
+        ↑ Tag : u8  =0x8F
+        ErrorCode : u32le  0xE0000001..0A
+        inv body =8F code 87, nothing else
+        inv server emits 04|06|07|09|0A only
+    }
+    class DynamicSection {
+        <<2.2.8.4 · server>>
+        Tag : u8  0x85|0x86|0x88
+        Content : u8[0..16384]
+        inv 0x85 accumulates, message stays open
+        inv tag & 0x8F =0x86 ends the call
+        inv tag & 0x8F =0x88 ends a message
+        inv sequence ends 88 then a 87 86 block
+    }
+    class ConnectionState {
+        <<3.1.1 per connection>>
+        Binding : Select | Straight
+        TransportParameters : TransportParameters
+        OpenPipes : map u4 -> opening|open
+    }
+    class ClientState {
+        <<3.2.1 adds to 3.1.1>>
+        ServicePipes : map u4 -> Service
+        InterfaceMap : map u4 -> map guid -> u8
+        OutstandingCalls : map u4 -> map vli -> Call
+        NextRequestId : map u4 -> vli
+        NextStreamId : u8  init 1
+    }
+    class ServerState {
+        <<3.3.1 adds to 3.1.1>>
+        PipeHandlers : map u4 -> Service
+        SessionState : Identity  per connection
+        OpenStreams : map u8 -> Stream
+        OutstandingCalls : map u4 -> map vli -> Call
+    }
+    class SelectBindingState {
+        <<4.2.3 per connection>>
+        SendSequence : u7  mod 128
+        ExpectedSequence : u7  mod 128
+        UnacknowledgedPackets : list Packet
+        EffectiveWindow : u32  init WindowSize
+        Reassembly : Context[16]
+        Context.Buffer : u8[]
+        Context.BytesOutstanding : u32
+    }
+    class StraightBindingState {
+        <<4.3.2 per connection>>
+        ReceiveBuffer : u8[]  partial record
+        inv no sequence, window or timer
+    }
+    class Notation {
+        <<how to read a field row>>
+        u8  u16le  u32le : unsigned int, byte order in suffix
+        u16be  u32be : unsigned int, big-endian
+        u8[n]  u8[a..b] : bytes, fixed or bounded
+        cstr : NUL-terminated ASCII
+        vli : 2.2.1.2 integer, 1 2 or 4 bytes
+        vsize : 2.2.1.3 size prefix, 1 or 2 bytes
+        guid : 2.2.1.4, 16 bytes
+        T? : optional field
+        T[a..b] : sequence, bounded
+        =v : fixed value
+        a..b     a|b : range, enumeration
+        b[i..j] : bit range of the byte
+        inv : invariant over the whole structure
+        ↑ : the enclosing structure names it, same bytes
+        ×2 : the sender writes the value a second time
+    }
+
+    Packet *-- PipeFrame : payload
+    Packet <|-- AcknowledgmentPacket
+    Packet <|-- NegativeAckPacket
+    PipeFrame ..> PipeMessage : 1..n
+    Record *-- PipeMessage : 1
+    PipeMessage <|-- PipeData : 0x1..0xF
+    PipeMessage <|-- PipeOpenRequest : 0x0000
+    PipeMessage <|-- PipeOpenResponse : 0x1..0xF
+    PipeMessage <|-- PipeClose : 0x1..0xF
+    PipeMessage <|-- ControlFrame : 0xFFFF
+    PipeData *-- HostBlock : 1
+    ControlFrame <|-- ConnectionRequest : type 1
+    ControlFrame <|-- KeepAlive : type 2
+    ControlFrame <|-- TransportParameters : type 3
+    ControlFrame <|-- ConnectionEstablished : type 4
+    ConnectionRequest *-- OSBlock : 1
+    HostBlock <|-- InterfaceTable : 0x00
+    HostBlock <|-- CallBlock : 0x01..0xDF
+    HostBlock <|-- StreamFrame : 0xE6|0xE7
+    InterfaceTable *-- InterfaceRecord : 1..n
+    CallBlock <|-- IteratorCancel : 0x0F
+    CallBlock *-- RequestParameters : request
+    CallBlock *-- ReplyParameters : reply
+    RequestParameters *-- SendParameter : 0..16
+    RequestParameters *-- ReceiveDescriptor : 0..16
+    SendParameter <|-- ChunkedFieldReference : 0x05|45
+    SendParameter *-- CompressedContent : 0x44|45
+    ReplyParameters *-- StaticField : 0..n
+    ReplyParameters *-- DynamicSection : 0..1
+    StaticField <|-- ErrorField : 0x8F
+    ChunkedFieldReference ..> StreamFrame : field bytes follow as frames
+    InterfaceRecord ..> CallBlock : assigns the Class byte
+    ReceiveDescriptor ..> StaticField : one reply field each, in order
+    ConnectionState <|-- ClientState
+    ConnectionState <|-- ServerState
+    ConnectionState *-- TransportParameters : as negotiated
+    ConnectionState *-- SelectBindingState : on Select
+    ConnectionState *-- StraightBindingState : on Straight
+
+    note for PipeMessage "Routing 0x0010..0xFFFE is unassigned and the message is discarded. Nothing in the bytes tells an open response from pipe data; the pipe state does."
+    note for DynamicSection "0x88 to a caller waiting for a single result blocks until the pipe closes. 0x86 to a caller reading a sequence ends it empty. Both failures are silent."
