@@ -139,6 +139,25 @@ func (f *fieldReader) VLI() uint32 {
 	return 0
 }
 
+func (f *fieldReader) Vsize() uint32 {
+	if f.err != nil {
+		return 0
+	}
+
+	first := uint32(f.fixed(false, 0x00, 1)[0])
+
+	if first&0b1000_0000 == 0b1000_0000 {
+		return first & 0b0111_1111
+	}
+
+	second := uint32(f.Byte(false))
+	if f.err != nil {
+		return 0
+	}
+
+	return first<<8 | second
+}
+
 func (f *fieldReader) Done() error {
 	if f.err != nil {
 		return f.err
