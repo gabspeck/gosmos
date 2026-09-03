@@ -227,9 +227,9 @@ The protocol negotiates in three places:
   them but the client still requires the message. Section 2.2.3.1.3 states how
   each peer applies them.
 - **Service version.** The pipe-open request names a service version (section
-  2.2.3.2). There is no encoding for refusing an open: Command and Status carry
-  one defined value each (section 2.2.3.3), so a server that will not serve the
-  request answers it and withholds the interface table (section 3.3.5.1).
+  2.2.3.2). A server that will not serve the request refuses the open in the
+  response's Status field (section 2.2.3.3), which distinguishes a name it does
+  not know from a version it does not serve (section 3.3.5.1).
 - **Interfaces.** The interface table (section 2.2.6) tells the client which
   interfaces the service exposes on this connection and what identifier each has
   on this pipe. Identifiers are per-pipe assignments, not fixed constants; a
@@ -709,9 +709,9 @@ discarded per section 3.3.5.1.
 | Field | Size | Description |
 |---|---|---|
 | PipeIndex | 2 | Routing value: the pipe index from the request. |
-| Command | 2 | 0x0001, pipe opened. The only defined value. |
-| ServerPipeIndex | 2 | The index the server will use. Equal to PipeIndex. |
-| Status | 2 | 0x0000. No other value is defined. |
+| Command | 2 | 0x0001. The only defined value, and it carries whether or not the open succeeded. |
+| ServerPipeIndex | 2 | The index the server will use, equal to PipeIndex. 0xFFFF refuses the open. |
+| Status | 2 | 0x0000 when the pipe opens. Any other value refuses the open and says why. |
 
 The message is eight bytes. Its first field is the routing value, and a sender
 MUST NOT place a further routing value in front of it: the eight bytes are the
@@ -724,6 +724,23 @@ on a pipe in the opening state as this response, and every message on that pipe
 afterwards as pipe data (section 2.2.3.4); nothing in the bytes distinguishes
 the two, so a receiver that does not make the transition on this message
 misparses everything that follows.
+
+**Refusing an open.** A server that will not serve the request sets
+ServerPipeIndex to 0xFFFF and puts its reason in Status:
+
+| Status | Meaning |
+|---|---|
+| 0x0000 | The pipe is open. |
+| 0x001F | No service of that name. |
+| 0x0021 | The service does not serve the requested version. |
+
+The two fields are read together: ServerPipeIndex 0xFFFF is what tells the
+client no pipe was opened, and Status is what it reports to its application. The
+pipe leaves the opening state without ever reaching open, and no interface table
+follows. A client MUST accept a Status this table does not list, reporting it by
+its numeric value rather than treating the message as malformed, so a server MAY
+answer with one where neither listed reason fits. A refused index is not in use
+and may be opened again (section 3.3.5.1).
 
 ##### 2.2.3.4 Pipe Data
 
@@ -1211,11 +1228,14 @@ little-endian bytes are:
 | 0xE0000009 | Chunked field could not be received | wire, server-emitted |
 | 0xE000000A | The service refused the call | wire, server-emitted |
 
-The Origin column says where a value comes from. **Wire** values are the ones a
-server puts in a 0x8F field; a client MUST accept all five, and a server MUST
-NOT emit any other. **Client-local** and **local** values are raised by an
-implementation to its own application when its own API call fails, never
-transmitted, and listed here only because both peers share one error space.
+The Origin column says where a value is raised in practice. **Wire** values are
+the ones a server has been observed to put in a 0x8F field. **Client-local** and
+**local** values are raised by an implementation to its own application when its
+own API call fails. Both peers share one error space and the column carries no
+wire meaning: a client decodes every value in the table alike, whichever column
+it sits in. A client MUST accept a value the table does not list, reporting it
+by its numeric value rather than failing the parse, so a server MAY answer with
+one where none of the listed values fits.
 
 **The byte shape of an error reply.** The 0x8F field is a static field and the
 static section still ends with the end-of-static tag. The whole body of an error
@@ -1547,7 +1567,7 @@ the section that owns the field:
 | Repeat Class, Method, and RequestId in every reply, or the client discards it | 2.2.5.1, 3.2.5.2 |
 | End every reply's static section with the end-of-static tag | 2.2.8.2 |
 | Emit only the first block of a sequence with a static section, and end a sequence with two blocks | 2.2.8.1, 2.2.8.4 |
-| Emit only the five wire error values, in the shape `8f xx xx xx xx 87` | 2.2.8.5 |
+| Shape every error reply as `8f xx xx xx xx 87` | 2.2.8.5 |
 | Answer an iterator cancel unconditionally | 2.2.9 |
 | Enforce every protocol and binding bound | 6.2 |
 | Never interleave the frames of two pipe messages | 2.1.1 |
@@ -1603,29 +1623,31 @@ The server:
    A malformed request (section 2.2.3.2) is discarded on the same terms. An
    index that was opened and has since been closed is not in use and may be
    opened again.
-2. Sends the pipe-open response (section 2.2.3.3).
+2. Resolves the service name and the requested version. When either fails, sends
+   the refusal of step 5 and stops.
 3. Binds the named service to the pipe index. Matching on the service name is
    case-insensitive. The same service may be bound to several pipes on one
    connection; each binding is independent and each pipe gets its own table.
-4. Sends the interface table for that service (section 2.2.6), unless step 5
-   withholds it.
-5. Withholds the table when the server will not serve the request:
+4. Sends the pipe-open response (section 2.2.3.3), then the interface table for
+   that service (section 2.2.6).
+5. Refuses the open when the server will not serve the request:
 
-| Condition | Response | Table |
-|---|---|---|
-| Service known, version served, ready | sent | sent |
-| Service known, version served, not otherwise ready | sent | **sent** |
-| Service known, version **not** served | sent | withheld |
-| Service name unknown | sent | withheld |
+| Condition | ServerPipeIndex | Status | Table |
+|---|---|---|---|
+| Service known, version served, ready | PipeIndex | 0x0000 | sent |
+| Service known, version served, not otherwise ready | PipeIndex | 0x0000 | **sent** |
+| Service known, version **not** served | 0xFFFF | 0x0021 | none |
+| Service name unknown | 0xFFFF | 0x001F | none |
 
-There is no encoding for refusing an open (section 2.2.3.3), so the withheld
-table is the refusal. The pipe opens either way. A client that receives no table
-resolves no interface, blocks until its own timeout expires, and abandons the
-pipe (section 3.2.5.1); the protocol defines no such timeout.
+The response carries the refusal, so a refused pipe never opens and its index
+stays free for a later request. A server MUST NOT send an interface table after
+a refusal, and MUST NOT refuse by opening the pipe and staying silent: a client
+that has been told the pipe is open waits for the table with nothing to time it
+out, and the call it meant to issue never happens.
 
-A service that is merely not yet ready is a different case and MUST still get
-its table, because the client needs the identifiers before it can call anything
-at all, and readiness is a condition the service resolves on its own.
+A service that is merely not yet ready is a different case and MUST still open
+and get its table, because the client needs the identifiers before it can call
+anything at all, and readiness is a condition the service resolves on its own.
 
 Section 5.2 shows a request, its response, and a table.
 
@@ -3235,6 +3257,16 @@ normative: where it and a defining section differ, the defining section governs.
 | 2 | Keep-alive |
 | 3 | Transport parameters |
 | 4 | Connection established |
+
+**Pipe-open response**
+
+| Name | Value |
+|---|---|
+| Command | 0x0001 |
+| ServerPipeIndex, refused | 0xFFFF |
+| Status, pipe opened | 0x0000 |
+| Status, service name unknown | 0x001F |
+| Status, version not served | 0x0021 |
 
 **Host block classes**
 
