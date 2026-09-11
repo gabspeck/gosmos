@@ -3,6 +3,8 @@ package rpc
 import (
 	"errors"
 	"fmt"
+
+	"gabriels.io/gosmos/types"
 )
 
 type Pipes struct{}
@@ -38,9 +40,14 @@ const (
 const cmdByte = uint8(0x01)
 
 type (
+	appendable interface {
+		Size() int
+		AppendTo(dst []byte) byte
+	}
 	PipeMessage interface {
 		Routing() RoutingValue
 	}
+	basePipeMessage struct{}
 	PipeOpenRequest struct {
 		reserved    uint16
 		pipeIndex   uint16
@@ -75,11 +82,18 @@ type (
 	InterfaceTable struct {
 		interfaces map[uint8]GUID
 	}
-	MethodCall struct {
+	methodCall struct {
 		class     HostBlockClass
 		method    uint8
 		requestID uint32
 	}
+
+	methodCallRequest struct {
+		methodCall
+		sendParameters    []types.Arg
+		receiveParameters []types.Tag
+	}
+
 	GUID         [16]byte
 	ControlFrame interface {
 		PipeMessage
@@ -136,18 +150,26 @@ var (
 
 	_ HostBlock = CallBlock(nil)
 	_ CallBlock = &InterfaceTable{}
-	_ CallBlock = &MethodCall{}
+	_ CallBlock = &methodCall{}
 )
 
-func (m *MethodCall) Class() HostBlockClass {
+func (b *basePipeMessage) AppendTo(dst []byte) []byte {
+	return append(dst, b.Routing())
+}
+
+func (b *basePipeMessage) Size() int {
+	return 4
+}
+
+func (m *methodCall) Class() HostBlockClass {
 	return m.class
 }
 
-func (m *MethodCall) Method() uint8 {
+func (m *methodCall) Method() uint8 {
 	return m.method
 }
 
-func (m *MethodCall) RequestID() uint32 {
+func (m *methodCall) RequestID() uint32 {
 	return m.requestID
 }
 
@@ -196,92 +218,128 @@ func (g GUID) String() string {
 	return fmt.Sprintf("%d", g)
 }
 
-func unmarshalPipeMessage(r fieldReader) (PipeMessage, error) {
-	routing := r.Uint16(false)
+func marshalPipeMessage(p PipeMessage) ([]byte, error) {
+	buf := make([]byte, 4)
+	buf = append(buf, byte(p.Routing()))
+
+	switch m := p.(type) {
+	case ControlFrame:
+		return marshalControlFrame(buf, m)
+	}
+
+	return buf, nil
+}
+
+func marshalControlFrame(header []byte, c ControlFrame) ([]byte, error) {
+}
+
+func unmarshalPipeMessage(buf []byte) (PipeMessage, error) {
+	r := fieldReader{buf: buf}
+	routing := r.Uint16()
 	if r.err != nil {
 		return nil, r.err
 	}
 	switch {
 	case routing == uint16(routingPipeOpen):
-		return decodePipeOpenRequest(r)
+		return unmarshalPipeOpenRequest(r)
 	case routing <= uint16(routingPipeDataEnd):
-		return decodePipeCommandOrData(RoutingValue(routing), r)
+		return unmarshalPipeCommandOrData(RoutingValue(routing), r)
 	case routing == uint16(routingControlFrame):
-		return decodeControlFrame(r)
+		return unmarshalControlFrame(r)
 	default:
 		return nil, fmt.Errorf("invalid routing value: 0x%2x", routing)
 	}
 }
 
-func decodeControlFrame(r fieldReader) (ControlFrame, error) {
-	ctlType := r.Byte(false)
+func unmarshalArg(tag byte, f fieldReader) (types.Arg, error) {
+	var parsed types.Arg
+	switch tag {
+	case byte(types.TagRequestUint8):
+		parsed = types.Uint8Arg(f.Byte())
+	case byte(types.TagRequestUint16):
+		parsed = types.Uint16Arg(f.Uint16())
+	case byte(types.TagRequestUint32):
+		parsed = types.Uint32Arg(f.Uint32())
+	case byte(types.TagRequestVariableLengthField):
+		parsed = types.VsizeArg(f.VsizeBytes())
+	case byte(types.TagRequestCompressedVariableLengthField):
+		parsed = types.VsizeBlocksArg(f.VsizeBlocks())
+	default:
+		return nil, fmt.Errorf("unknown tag: 0x%02x", tag)
+	}
+
+	return parsed, f.err
+}
+
+func unmarshalControlFrame(r fieldReader) (ControlFrame, error) {
+	ctlType := r.Byte()
 	switch ctlType {
 	case uint8(cfTypeConnRequest):
-		return decodeConnectionRequest(r)
+		return unmarshalConnectionRequest(r)
 	case uint8(cfTypeKeepAlive):
-		return decodeKeepAlive(r)
+		return unmarshalKeepAlive(r)
 	case uint8(cfTypeTransportParams):
-		return decodeTransportParameters(r)
+		return unmarshalTransportParameters(r)
 	case uint8(cfTypeConnEstablished):
-		return decodeConnectionEstablished(r)
+		return unmarshalConnectionEstablished(r)
 	}
 	return nil, fmt.Errorf("unknown control frame type: 0x%2x", ctlType)
 }
 
-func decodeConnectionRequest(r fieldReader) (*ConnectionRequest, error) {
+func unmarshalConnectionRequest(r fieldReader) (*ConnectionRequest, error) {
 	c := ConnectionRequest{}
-	c.formatVer = r.Uint32(false)
-	c.lineRate = r.Uint32(false)
+	c.formatVer = r.Uint32()
+	c.lineRate = r.Uint32()
 	c.locale = r.NarrowString()
 	c.connLog = r.NarrowString()
 	c.linkDesc = r.NarrowString()
-	c.elapsed = r.Uint32(false)
-	c.osBlock.languageID = r.Uint32(false)
-	c.osBlock.reserved0 = r.Uint32(false)
-	c.osBlock.platform = r.Uint32(false)
-	c.osBlock.major = r.Uint32(false)
-	c.osBlock.minor = r.Uint32(false)
-	c.osBlock.build = r.Uint32(false)
-	c.osBlock.reserved1 = r.Uint32(false)
+	c.elapsed = r.Uint32()
+	c.osBlock.languageID = r.Uint32()
+	c.osBlock.reserved0 = r.Uint32()
+	c.osBlock.platform = r.Uint32()
+	c.osBlock.major = r.Uint32()
+	c.osBlock.minor = r.Uint32()
+	c.osBlock.build = r.Uint32()
+	c.osBlock.reserved1 = r.Uint32()
 
 	return &c, r.Done()
 }
 
-func decodeKeepAlive(f fieldReader) (*KeepAlive, error) {
+func unmarshalKeepAlive(f fieldReader) (*KeepAlive, error) {
 	return &KeepAlive{}, f.Done()
 }
 
-func decodeTransportParameters(f fieldReader) (*TransportParameters, error) {
+func unmarshalTransportParameters(f fieldReader) (*TransportParameters, error) {
 	// server only
 	return nil, ErrNotImplemented
 }
 
-func decodePipeOpenRequest(f fieldReader) (*PipeOpenRequest, error) {
+func unmarshalPipeOpenRequest(f fieldReader) (*PipeOpenRequest, error) {
 	p := PipeOpenRequest{}
-	p.reserved = f.Uint16(false)
-	p.pipeIndex = f.Uint16(false)
+	p.reserved = f.Uint16()
+	p.pipeIndex = f.Uint16()
 	p.serviceName = f.NarrowString()
 	p.parameter = f.NarrowString()
-	p.version = f.Uint32(false)
+	p.version = f.Uint32()
 	return &p, f.Done()
 }
 
-func decodeConnectionEstablished(f fieldReader) (*ConnectionEstablished, error) {
+func unmarshalConnectionEstablished(f fieldReader) (*ConnectionEstablished, error) {
 	return &ConnectionEstablished{}, f.Done()
 }
 
-func decodePipeCommandOrData(pipeIndex RoutingValue, f fieldReader) (PipeMessage, error) {
+func unmarshalPipeCommandOrData(pipeIndex RoutingValue, f fieldReader) (PipeMessage, error) {
 	/* if the first pipe message byte is 0x01 it may have two meanings:
 	a pipe close command if followed by nothing else,
 	otherwise it's a host block class ID
 	*/
-	classOrCmd := f.Byte(false)
+	classOrCmd := f.Byte()
 	if classOrCmd == cmdByte && f.Done() == nil {
 		p := PipeCloseRequest{}
 		p.pipeID = pipeIndex
 		return &p, nil
 	}
-	body, err := decodeHostBlock(classOrCmd, f)
+	body, err := unmarshalHostBlock(classOrCmd, f)
 	if err != nil {
 		return nil, err
 	}
@@ -291,40 +349,59 @@ func decodePipeCommandOrData(pipeIndex RoutingValue, f fieldReader) (PipeMessage
 	return &p, f.Done()
 }
 
-func decodeHostBlock(class uint8, f fieldReader) (HostBlock, error) {
+func unmarshalHostBlock(class uint8, f fieldReader) (HostBlock, error) {
 	switch {
 	case class == uint8(hbClassInterfaceTable):
-		return decodeInterfaceTable(f)
+		return unmarshalInterfaceTable(f)
 	case class <= uint8(hbClassCallBlockRecordEnd):
-		return decodeMethodCall(HostBlockClass(class), f)
+		return unmarshalMethodCallRequest(HostBlockClass(class), f)
 	case class == uint8(hbClassStreamFrameMore) || class == uint8(hbClassStreamFrameLast):
-		return decodeStreamFrame(HostBlockClass(class), f)
+		return unmarshalStreamFrame(HostBlockClass(class), f)
 	default:
 		return nil, fmt.Errorf("unknown host block class: 0x%02x", class)
 	}
 }
 
-func decodeInterfaceTable(f fieldReader) (*InterfaceTable, error) {
+func unmarshalInterfaceTable(f fieldReader) (*InterfaceTable, error) {
 	return nil, ErrNotImplemented
 }
 
-func decodeMethodCall(c HostBlockClass, f fieldReader) (*MethodCall, error) {
-	m := MethodCall{}
+func unmarshalMethodCallRequest(c HostBlockClass, f fieldReader) (*methodCall, error) {
+	m := methodCallRequest{}
 	m.class = c
-	m.method = f.Byte(false)
+	m.method = f.Byte()
 	m.requestID = f.VLI()
 
+	for {
+		if f.Done() == nil {
+			break
+		}
+		tag := f.Byte()
+		if f.err != nil {
+			return nil, f.err
+		}
+		if tag&0b10000000 == 0b10000000 {
+			m.receiveParameters = append(m.receiveParameters, types.Tag(tag))
+		} else {
+			arg, err := unmarshalArg(tag, f)
+			if err != nil {
+				return nil, err
+			}
+			m.sendParameters = append(m.sendParameters, arg)
+		}
+	}
+
 	return nil, ErrNotImplemented
 }
 
-func decodeStreamFrame(c HostBlockClass, f fieldReader) (HostBlock, error) {
+func unmarshalStreamFrame(c HostBlockClass, f fieldReader) (HostBlock, error) {
 	if c != hbClassStreamFrameMore && c != hbClassStreamFrameLast {
 		return nil, fmt.Errorf("host block class is not a stream frame class: 0x%2x", c)
 	}
 	return nil, ErrNotImplemented
 }
 
-func decodeIteratorCancel(f fieldReader) (HostBlock, error) {
+func unmarshalIteratorCancel(f fieldReader) (HostBlock, error) {
 	return nil, nil
 }
 

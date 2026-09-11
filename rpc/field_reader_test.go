@@ -104,14 +104,13 @@ func TestVSize(t *testing.T) {
 			desc: "2-byte tag, buffer overrun",
 			val:  []byte{0b0111_1111},
 			want: 0,
-			// fixme: field counter does not work correctly for variable length fields
-			err: fmt.Errorf("field 1: truncated"),
+			err:  fmt.Errorf("field 0: truncated"),
 		},
 	}
 	for _, tC := range testCases {
 		t.Run(tC.desc, func(t *testing.T) {
 			f := fieldReader{buf: tC.val}
-			actual := f.Vsize()
+			actual := f.vsize()
 			if actual != tC.want {
 				t.Fatalf("wanted %d, got %d", tC.want, actual)
 			}
