@@ -1,11 +1,15 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net"
+	"os"
+	"os/signal"
+	"syscall"
 
-	"gabriels.io/gosmos/mos"
+	"gabriels.io/gosmos/rpc"
 )
 
 func main() {
@@ -13,14 +17,11 @@ func main() {
 	if err != nil {
 		log.Fatalln(err)
 	}
-	server := mos.NewServer()
-	for {
-		conn, err := l.Accept()
-		fmt.Printf("new connection from %s\n", conn.RemoteAddr())
-		if err != nil {
-			log.Println(err)
-			continue
-		}
-		go server.HandleConnection(conn)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop() // unregisters the signal handler so a second ctrl+c force quits
+	fmt.Println("starting server")
+	if err := rpc.NewServer().Serve(ctx, l); err != nil {
+		log.Fatal(err)
 	}
+	// 1a0000ffff030004000000040000100000000100000058020000
 }

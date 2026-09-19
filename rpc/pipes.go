@@ -1,13 +1,13 @@
 package rpc
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"reflect"
 
 	"gabriels.io/gosmos/types"
 )
-
-type Pipes struct{}
 
 var ErrNotImplemented = errors.New("not implemented")
 
@@ -40,14 +40,16 @@ const (
 const cmdByte = uint8(0x01)
 
 type (
-	appendable interface {
+	Appendable interface {
 		Size() int
-		AppendTo(dst []byte) byte
+		Append([]byte) []byte
+	}
+	PipeFrame struct {
+		PipeMessage
 	}
 	PipeMessage interface {
 		Routing() RoutingValue
 	}
-	basePipeMessage struct{}
 	PipeOpenRequest struct {
 		reserved    uint16
 		pipeIndex   uint16
@@ -69,7 +71,7 @@ type (
 	}
 	PipeData struct {
 		pipeBound
-		body HostBlock
+		HostBlock
 	}
 	HostBlock interface {
 		Class() HostBlockClass
@@ -94,14 +96,14 @@ type (
 		receiveParameters []types.Tag
 	}
 
-	GUID         [16]byte
-	ControlFrame interface {
-		PipeMessage
+	GUID             [16]byte
+	ControlFrameBody interface {
 		Type() ControlFrameType
 	}
-	controlFrameMessage struct{}
-	ConnectionRequest   struct {
-		controlFrameMessage
+	ControlFrame struct {
+		ControlFrameBody
+	}
+	ConnectionRequest struct {
 		formatVer uint32
 		lineRate  uint32
 		locale    string
@@ -119,11 +121,8 @@ type (
 		build      uint32
 		reserved1  uint32
 	}
-	KeepAlive struct {
-		controlFrameMessage
-	}
+	KeepAlive           struct{}
 	TransportParameters struct {
-		controlFrameMessage
 		packetSize uint32
 		maxBytes   uint32
 		windowSize uint32
@@ -131,34 +130,93 @@ type (
 		ackTimeout uint32
 		keepAlive  *uint32
 	}
-	ConnectionEstablished struct {
-		controlFrameMessage
-	}
+	ConnectionEstablished struct{}
 )
 
 var (
 	_ PipeMessage = &PipeOpenRequest{}
 	_ PipeMessage = &PipeOpenResponse{}
-	_ PipeMessage = ControlFrame(nil)
-	_ PipeMessage = &controlFrameMessage{}
+	_ PipeMessage = &ControlFrame{}
 	_ PipeMessage = &PipeData{}
 
-	_ ControlFrame = &ConnectionRequest{}
-	_ ControlFrame = &KeepAlive{}
-	_ ControlFrame = &TransportParameters{}
-	_ ControlFrame = &ConnectionEstablished{}
+	_ ControlFrameBody = &ConnectionRequest{}
+	_ ControlFrameBody = &KeepAlive{}
+	_ ControlFrameBody = &ConnectionEstablished{}
 
 	_ HostBlock = CallBlock(nil)
 	_ CallBlock = &InterfaceTable{}
 	_ CallBlock = &methodCall{}
 )
 
-func (b *basePipeMessage) AppendTo(dst []byte) []byte {
-	return append(dst, b.Routing())
+func mustBe[T any](v any) T {
+	tv, ok := v.(T)
+	if !ok {
+		panic(fmt.Sprintf("%v is not %s", reflect.ValueOf(v).Type(), reflect.TypeFor[T]().Name()))
+	}
+	return tv
 }
 
-func (b *basePipeMessage) Size() int {
-	return 4
+func (p *PipeFrame) Size() int {
+	app := mustBe[Appendable](p.PipeMessage)
+	return 2 + app.Size()
+}
+
+func (p *PipeFrame) Append(b []byte) []byte {
+	app := mustBe[Appendable](p.PipeMessage)
+	b = binary.LittleEndian.AppendUint16(b, uint16(p.Routing()))
+	return app.Append(b)
+}
+
+func (c *ControlFrame) Size() int {
+	app := mustBe[Appendable](c.ControlFrameBody)
+	return 1 + app.Size()
+}
+
+func (c *ControlFrame) Append(b []byte) []byte {
+	app := mustBe[Appendable](c.ControlFrameBody)
+	b = append(b, byte(c.Type()))
+	return app.Append(b)
+}
+
+func (t *TransportParameters) Size() int {
+	size := 20
+	if t.keepAlive != nil {
+		size += 4
+	}
+	return size
+}
+
+func (t *TransportParameters) Append(b []byte) []byte {
+	b = binary.LittleEndian.AppendUint32(b, t.packetSize)
+	b = binary.LittleEndian.AppendUint32(b, t.maxBytes)
+	b = binary.LittleEndian.AppendUint32(b, t.windowSize)
+	b = binary.LittleEndian.AppendUint32(b, t.ackBehind)
+	b = binary.LittleEndian.AppendUint32(b, t.ackTimeout)
+	if t.keepAlive != nil {
+		b = binary.LittleEndian.AppendUint32(b, *t.keepAlive)
+	}
+	return b
+}
+
+func (c *ConnectionRequest) Size() int {
+	return 4 + 4 + len(c.locale) + 1 + len(c.connLog) + 1 + len(c.linkDesc) + 1 + 4 + 28
+}
+
+func (c *ConnectionRequest) Append(b []byte) []byte {
+	b = binary.LittleEndian.AppendUint32(b, c.formatVer)
+	b = binary.LittleEndian.AppendUint32(b, c.lineRate)
+	b = append(append(b, c.locale...), 0)
+	b = append(append(b, c.connLog...), 0)
+	b = append(append(b, c.linkDesc...), 0)
+	b = binary.LittleEndian.AppendUint32(b, c.elapsed)
+	b = binary.LittleEndian.AppendUint32(b, c.osBlock.languageID)
+	b = binary.LittleEndian.AppendUint32(b, c.osBlock.reserved0)
+	b = binary.LittleEndian.AppendUint32(b, c.osBlock.platform)
+	b = binary.LittleEndian.AppendUint32(b, c.osBlock.major)
+	b = binary.LittleEndian.AppendUint32(b, c.osBlock.minor)
+	b = binary.LittleEndian.AppendUint32(b, c.osBlock.build)
+	b = binary.LittleEndian.AppendUint32(b, c.osBlock.reserved1)
+	return b
 }
 
 func (m *methodCall) Class() HostBlockClass {
@@ -189,7 +247,7 @@ func (c *ConnectionRequest) Type() ControlFrameType {
 	return cfTypeConnRequest
 }
 
-func (c *controlFrameMessage) Routing() RoutingValue {
+func (c *ControlFrame) Routing() RoutingValue {
 	return 0xFFFF
 }
 
@@ -218,37 +276,25 @@ func (g GUID) String() string {
 	return fmt.Sprintf("%d", g)
 }
 
-func marshalPipeMessage(p PipeMessage) ([]byte, error) {
-	buf := make([]byte, 4)
-	buf = append(buf, byte(p.Routing()))
-
-	switch m := p.(type) {
-	case ControlFrame:
-		return marshalControlFrame(buf, m)
-	}
-
-	return buf, nil
-}
-
-func marshalControlFrame(header []byte, c ControlFrame) ([]byte, error) {
-}
-
-func unmarshalPipeMessage(buf []byte) (PipeMessage, error) {
+func unmarshalPipeFrame(buf []byte) (*PipeFrame, error) {
 	r := fieldReader{buf: buf}
 	routing := r.Uint16()
 	if r.err != nil {
 		return nil, r.err
 	}
+	var pipeMessage PipeMessage
+	var err error
 	switch {
 	case routing == uint16(routingPipeOpen):
-		return unmarshalPipeOpenRequest(r)
+		pipeMessage, err = unmarshalPipeOpenRequest(r)
 	case routing <= uint16(routingPipeDataEnd):
-		return unmarshalPipeCommandOrData(RoutingValue(routing), r)
+		pipeMessage, err = unmarshalPipeCommandOrData(RoutingValue(routing), r)
 	case routing == uint16(routingControlFrame):
-		return unmarshalControlFrame(r)
+		pipeMessage, err = unmarshalControlFrame(r)
 	default:
-		return nil, fmt.Errorf("invalid routing value: 0x%2x", routing)
+		pipeMessage, err = nil, fmt.Errorf("invalid routing value: 0x%2x", routing)
 	}
+	return &PipeFrame{pipeMessage}, err
 }
 
 func unmarshalArg(tag byte, f fieldReader) (types.Arg, error) {
@@ -271,19 +317,21 @@ func unmarshalArg(tag byte, f fieldReader) (types.Arg, error) {
 	return parsed, f.err
 }
 
-func unmarshalControlFrame(r fieldReader) (ControlFrame, error) {
+func unmarshalControlFrame(r fieldReader) (*ControlFrame, error) {
 	ctlType := r.Byte()
+	var body ControlFrameBody
+	var err error
 	switch ctlType {
 	case uint8(cfTypeConnRequest):
-		return unmarshalConnectionRequest(r)
+		body, err = unmarshalConnectionRequest(r)
 	case uint8(cfTypeKeepAlive):
-		return unmarshalKeepAlive(r)
-	case uint8(cfTypeTransportParams):
-		return unmarshalTransportParameters(r)
+		body, err = unmarshalKeepAlive(r)
 	case uint8(cfTypeConnEstablished):
-		return unmarshalConnectionEstablished(r)
+		body, err = unmarshalConnectionEstablished(r)
+	default:
+		return nil, fmt.Errorf("unknown control frame type: 0x%2x", ctlType)
 	}
-	return nil, fmt.Errorf("unknown control frame type: 0x%2x", ctlType)
+	return &ControlFrame{body}, err
 }
 
 func unmarshalConnectionRequest(r fieldReader) (*ConnectionRequest, error) {
@@ -302,16 +350,13 @@ func unmarshalConnectionRequest(r fieldReader) (*ConnectionRequest, error) {
 	c.osBlock.build = r.Uint32()
 	c.osBlock.reserved1 = r.Uint32()
 
+	fmt.Printf("connection request: %+v\n", c)
+
 	return &c, r.Done()
 }
 
 func unmarshalKeepAlive(f fieldReader) (*KeepAlive, error) {
 	return &KeepAlive{}, f.Done()
-}
-
-func unmarshalTransportParameters(f fieldReader) (*TransportParameters, error) {
-	// server only
-	return nil, ErrNotImplemented
 }
 
 func unmarshalPipeOpenRequest(f fieldReader) (*PipeOpenRequest, error) {
@@ -345,7 +390,7 @@ func unmarshalPipeCommandOrData(pipeIndex RoutingValue, f fieldReader) (PipeMess
 	}
 	p := PipeData{}
 	p.pipeID = pipeIndex
-	p.body = body
+	p.HostBlock = body
 	return &p, f.Done()
 }
 
@@ -372,10 +417,7 @@ func unmarshalMethodCallRequest(c HostBlockClass, f fieldReader) (*methodCall, e
 	m.method = f.Byte()
 	m.requestID = f.VLI()
 
-	for {
-		if f.Done() == nil {
-			break
-		}
+	for f.Done() != nil {
 		tag := f.Byte()
 		if f.err != nil {
 			return nil, f.err
@@ -405,99 +447,42 @@ func unmarshalIteratorCancel(f fieldReader) (HostBlock, error) {
 	return nil, nil
 }
 
-// const CommandPipeOpened = 0x0001
+func OpenPipe(rq PipeOpenRequest, rs *PipeOpenResponse) error {
+	if rq.pipeIndex < 1 || rq.pipeIndex > 15 {
+		return fmt.Errorf("bad pipe index: %d", rq.pipeIndex)
+	}
 
-// func (c *controlFrameMessage) UnmarshalBinary(buf []byte) error {
-// 	f := fieldReader{buf: buf}
-// 	c.Type = f.Byte(false)
-// 	c.Content = f.Bytes(len(f.buf))
-// 	return f.Done()
-// }
+	// todo: validate if pipe is already open
 
-// func (c *ControlFrame) MarshalBinary() (out []byte, err error) {
-// 	out = append(out, c.Type)
-// 	out = append(out, c.Content...)
-// 	err = nil
-// 	return
-// }
+	rs.pipeID = RoutingValue(rq.pipeIndex)
+	rs.command = 0x00
+	rs.serverPipeIndex = rq.pipeIndex
+	rs.status = 0x0000
 
-// func (p *PipeOpenRequest) UnmarshalBinary(buf []byte) error {
-// 	f := fieldReader{buf: buf}
-// 	p.Reserved = f.Uint16(false)
-// 	p.PipeIndex = f.Uint16(false)
-// 	p.ServiceName = f.NarrowString()
-// 	p.Parameter = f.NarrowString()
-// 	p.Version = f.Uint32(false)
+	fmt.Printf("PipeOpenResponse: %v\n", rs)
 
-// 	return f.Done()
-// }
+	return nil
+}
 
-// const (
-// 	controlFrameConnRequest     = 0x01
-// 	controlFrameTransportParams = 0x03
-// 	controlFrameConnEstablished = 0x04
-// )
+func dispatchPipeMessage(_ *Session, p *PipeFrame) (Appendable, error) {
+	fmt.Printf("dispatching a %v\n", reflect.TypeOf(p.PipeMessage))
+	var pm PipeMessage
+	var err error
+	switch v := p.PipeMessage.(type) {
+	case *ControlFrame:
+		pm, err = handleControlFrame(v)
+	default:
+		pm, err = nil, fmt.Errorf("unhandled pipe message type")
+	}
+	return &PipeFrame{pm}, err
+}
 
-// var defaultTransportParameters = []byte{
-// 	0x00, 0x04, 0x00, 0x00, // 1024
-// 	0x00, 0x04, 0x00, 0x00, // 1024
-// 	0x10, 0x00, 0x00, 0x00, // 16
-// 	0x01, 0x00, 0x00, 0x00, // 1
-// 	0x58, 0x02, 0x00, 0x00, // 600
-// }
-
-// func (p *PipeDataRequest) UnmarshalBinary(buf []byte) error {
-// 	f := &fieldReader{buf: buf}
-// 	p.Data = f.Bytes(len(f.buf))
-// 	return f.Done()
-// }
-
-// func (p *PipeOpenResponse) MarshalBinary() (out []byte, err error) {
-// 	out = make([]byte, 8)
-// 	binary.LittleEndian.PutUint16(out, p.PipeIndex)
-// 	binary.LittleEndian.PutUint16(out[2:], p.Command)
-// 	binary.LittleEndian.PutUint16(out[4:], p.ServerPipeIndex)
-// 	binary.LittleEndian.PutUint16(out[6:], p.Status)
-// 	err = nil
-// 	return
-// }
-
-// func (p *Pipes) Open(rq PipeOpenRequest, rs *PipeOpenResponse) error {
-// 	if rq.PipeIndex < 1 || rq.PipeIndex > 15 {
-// 		return fmt.Errorf("bad pipe index: %d", rq.PipeIndex)
-// 	}
-
-// 	// todo: validate if pipe is already open
-
-// 	rs.PipeIndex = rq.PipeIndex
-// 	rs.Command = CommandPipeOpened
-// 	rs.ServerPipeIndex = rq.PipeIndex
-// 	rs.Status = 0x0000
-
-// 	fmt.Printf("PipeOpenResponse: %v\n", rs)
-
-// 	return nil
-// }
-
-// func (p *Pipes) Data(PipeDataRequest, *PipeDataResponse) error {
-// 	return nil
-// }
-
-// func (p *Pipes) HandleControlFrame(rq ControlFrame, rs *ControlFrame) error {
-// 	switch rq.Type {
-// 	case controlFrameConnRequest:
-// 		if len(rq.Content) < 4 {
-// 			return fmt.Errorf("connection request frame too short (%d)", len(rq.Content))
-// 		}
-// 		rs.Content = bytes.Clone(rq.Content)
-// 		return nil
-// 	case controlFrameConnEstablished:
-// 		if len(rq.Content) > 0 {
-// 			return fmt.Errorf("%d trailing bytes in connection established frame", len(rq.Content))
-// 		}
-// 		rs.Type = controlFrameTransportParams
-// 		rs.Content = bytes.Clone(defaultTransportParameters)
-// 		return nil
-// 	}
-// 	return fmt.Errorf("unknown control frame type 0x%x", rq.Type)
-// }
+func handleControlFrame(rq *ControlFrame) (*ControlFrame, error) {
+	switch rq.ControlFrameBody.(type) {
+	case *ConnectionRequest:
+		return rq, nil
+	case *ConnectionEstablished:
+		return &ControlFrame{&defaultTransportParameters}, nil
+	}
+	return nil, fmt.Errorf("unknown control frame type 0x%x", rq.Type)
+}
