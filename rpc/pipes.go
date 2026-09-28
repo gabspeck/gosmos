@@ -59,7 +59,8 @@ type (
 	}
 	pipeBound[T any] struct {
 		pipeID RoutingValue
-		body   T
+		// type argument forces a named attribute which forces a passthrough implementation of Appendable
+		body T
 	}
 	PipeOpenResponse struct {
 		command         uint16
@@ -270,14 +271,12 @@ func (p *pipeBound[T]) Routing() RoutingValue {
 
 func (p *pipeBound[T]) Size() int {
 	app := mustBe[Appendable](p.body)
-	return 2 + app.Size()
+	return app.Size()
 }
 
 func (p *pipeBound[T]) Append(buf []byte) []byte {
 	app := mustBe[Appendable](p.body)
-	buf = binary.LittleEndian.AppendUint16(buf, uint16(p.pipeID))
-	buf = app.Append(buf)
-	return buf
+	return app.Append(buf)
 }
 
 func (i *InterfaceTable) Class() HostBlockClass {
@@ -486,11 +485,13 @@ func handlePipeOpen(p *PipeOpenRequest) (*pipeBound[PipeOpenResponse], error) {
 	return &pipeBound[PipeOpenResponse]{
 		RoutingValue(p.pipeIndex),
 		PipeOpenResponse{
-			command:         0,
+			command:         1,
 			serverPipeIndex: p.pipeIndex,
 			status:          0,
 		},
 	}, nil
+	// correct answer: 11 bytes (pipe 4):  0b00_00_0400_0100_0400_0000
+	// actually sending: 9 bytes (pipe 4)  0b00_00_0700_0100_0700_0000
 }
 
 func handleControlFrame(rq *ControlFrame) (*ControlFrame, error) {

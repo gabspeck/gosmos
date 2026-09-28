@@ -23,5 +23,4 @@ func main() {
 	if err := rpc.NewServer().Serve(ctx, l); err != nil {
 		log.Fatal(err)
 	}
-	// 1a0000ffff030004000000040000100000000100000058020000
 }
