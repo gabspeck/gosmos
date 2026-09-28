@@ -50,11 +50,11 @@ func (m *MosServerCodec) ReadRequestBody(p any) error {
 		return m.Close()
 	}
 
-	ctx := m.pending[m.seq]
+	// ctx := m.pending[m.seq]
 
-	if pd, ok := p.(PipeData); ok {
-		pd.pipeID = ctx.routing
-	}
+	// if pd, ok := p.(PipeData); ok {
+	// 	pd.pipeID = ctx.routing
+	// }
 	bu, ok := p.(encoding.BinaryUnmarshaler)
 	if !ok {
 		return fmt.Errorf("not an unmarshaler")

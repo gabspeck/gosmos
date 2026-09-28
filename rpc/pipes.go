@@ -57,20 +57,17 @@ type (
 		parameter   string
 		version     uint32
 	}
-	pipeBound struct {
+	pipeBound[T any] struct {
 		pipeID RoutingValue
+		body   T
 	}
 	PipeOpenResponse struct {
-		pipeBound
 		command         uint16
 		serverPipeIndex uint16
 		status          uint16
 	}
-	PipeCloseRequest struct {
-		pipeBound
-	}
-	PipeData struct {
-		pipeBound
+	PipeCloseRequest struct{}
+	PipeData         struct {
 		HostBlock
 	}
 	HostBlock interface {
@@ -115,8 +112,8 @@ type (
 	OSBlock struct {
 		languageID uint32
 		reserved0  uint32
-		platform   uint32
 		major      uint32
+		platform   uint32
 		minor      uint32
 		build      uint32
 		reserved1  uint32
@@ -135,9 +132,9 @@ type (
 
 var (
 	_ PipeMessage = &PipeOpenRequest{}
-	_ PipeMessage = &PipeOpenResponse{}
+	_ PipeMessage = &pipeBound[PipeOpenResponse]{0, PipeOpenResponse{}}
 	_ PipeMessage = &ControlFrame{}
-	_ PipeMessage = &PipeData{}
+	_ PipeMessage = &pipeBound[PipeData]{0, PipeData{}}
 
 	_ ControlFrameBody = &ConnectionRequest{}
 	_ ControlFrameBody = &KeepAlive{}
@@ -165,6 +162,18 @@ func (p *PipeFrame) Append(b []byte) []byte {
 	app := mustBe[Appendable](p.PipeMessage)
 	b = binary.LittleEndian.AppendUint16(b, uint16(p.Routing()))
 	return app.Append(b)
+}
+
+func (p PipeOpenResponse) Size() int {
+	return 2 + 2 + 2
+}
+
+func (p PipeOpenResponse) Append(b []byte) []byte {
+	b = binary.LittleEndian.AppendUint16(b, p.command)
+	b = binary.LittleEndian.AppendUint16(b, p.serverPipeIndex)
+	b = binary.LittleEndian.AppendUint16(b, p.status)
+
+	return b
 }
 
 func (c *ControlFrame) Size() int {
@@ -255,8 +264,20 @@ func (p *PipeOpenRequest) Routing() RoutingValue {
 	return 0x0000
 }
 
-func (p *pipeBound) Routing() RoutingValue {
+func (p *pipeBound[T]) Routing() RoutingValue {
 	return p.pipeID
+}
+
+func (p *pipeBound[T]) Size() int {
+	app := mustBe[Appendable](p.body)
+	return 2 + app.Size()
+}
+
+func (p *pipeBound[T]) Append(buf []byte) []byte {
+	app := mustBe[Appendable](p.body)
+	buf = binary.LittleEndian.AppendUint16(buf, uint16(p.pipeID))
+	buf = app.Append(buf)
+	return buf
 }
 
 func (i *InterfaceTable) Class() HostBlockClass {
@@ -380,17 +401,14 @@ func unmarshalPipeCommandOrData(pipeIndex RoutingValue, f fieldReader) (PipeMess
 	*/
 	classOrCmd := f.Byte()
 	if classOrCmd == cmdByte && f.Done() == nil {
-		p := PipeCloseRequest{}
-		p.pipeID = pipeIndex
+		p := pipeBound[PipeCloseRequest]{pipeIndex, PipeCloseRequest{}}
 		return &p, nil
 	}
 	body, err := unmarshalHostBlock(classOrCmd, f)
 	if err != nil {
 		return nil, err
 	}
-	p := PipeData{}
-	p.pipeID = pipeIndex
-	p.HostBlock = body
+	p := pipeBound[PipeData]{pipeIndex, PipeData{HostBlock: body}}
 	return &p, f.Done()
 }
 
@@ -412,6 +430,7 @@ func unmarshalInterfaceTable(f fieldReader) (*InterfaceTable, error) {
 }
 
 func unmarshalMethodCallRequest(c HostBlockClass, f fieldReader) (*methodCall, error) {
+	fmt.Println("-> method call <-")
 	m := methodCallRequest{}
 	m.class = c
 	m.method = f.Byte()
@@ -447,23 +466,6 @@ func unmarshalIteratorCancel(f fieldReader) (HostBlock, error) {
 	return nil, nil
 }
 
-func OpenPipe(rq PipeOpenRequest, rs *PipeOpenResponse) error {
-	if rq.pipeIndex < 1 || rq.pipeIndex > 15 {
-		return fmt.Errorf("bad pipe index: %d", rq.pipeIndex)
-	}
-
-	// todo: validate if pipe is already open
-
-	rs.pipeID = RoutingValue(rq.pipeIndex)
-	rs.command = 0x00
-	rs.serverPipeIndex = rq.pipeIndex
-	rs.status = 0x0000
-
-	fmt.Printf("PipeOpenResponse: %v\n", rs)
-
-	return nil
-}
-
 func dispatchPipeMessage(_ *Session, p *PipeFrame) (Appendable, error) {
 	fmt.Printf("dispatching a %v\n", reflect.TypeOf(p.PipeMessage))
 	var pm PipeMessage
@@ -471,10 +473,24 @@ func dispatchPipeMessage(_ *Session, p *PipeFrame) (Appendable, error) {
 	switch v := p.PipeMessage.(type) {
 	case *ControlFrame:
 		pm, err = handleControlFrame(v)
+	case *PipeOpenRequest:
+		pm, err = handlePipeOpen(v)
 	default:
 		pm, err = nil, fmt.Errorf("unhandled pipe message type")
 	}
 	return &PipeFrame{pm}, err
+}
+
+func handlePipeOpen(p *PipeOpenRequest) (*pipeBound[PipeOpenResponse], error) {
+	fmt.Printf("%v\n", p)
+	return &pipeBound[PipeOpenResponse]{
+		RoutingValue(p.pipeIndex),
+		PipeOpenResponse{
+			command:         0,
+			serverPipeIndex: p.pipeIndex,
+			status:          0,
+		},
+	}, nil
 }
 
 func handleControlFrame(rq *ControlFrame) (*ControlFrame, error) {

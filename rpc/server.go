@@ -41,7 +41,7 @@ func NewServer() *Server {
 func (s *Server) Serve(ctx context.Context, l net.Listener) error {
 	go func() {
 		<-ctx.Done()
-		l.Close()
+		l.Close() // close the listener to force an error in the accept loop
 	}()
 	for {
 		fmt.Println("standing by for connections")
@@ -66,7 +66,7 @@ func (s *Server) Serve(ctx context.Context, l net.Listener) error {
 }
 
 func (s *Server) handle(c net.Conn, id int) error {
-	fmt.Println("new connection")
+	fmt.Printf("new connection, id %d\n", id)
 	defer s.remove(c)
 	session := Session{}
 	for {
@@ -114,6 +114,7 @@ func (s *Server) add(c net.Conn) (int, bool) {
 	}
 	s.conns[c] = struct{}{}
 	s.wg.Add(1)
+	s.nextID += 1
 	return s.nextID, true
 }
 
