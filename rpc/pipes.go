@@ -470,33 +470,39 @@ func dispatchPipeMessage(s *Session, p *PipeFrame) error {
 	var err error
 	switch v := p.PipeMessage.(type) {
 	case *ControlFrame:
-		pm, err = handleControlFrame(s, v)
+		err = handleControlFrame(s, v)
 	case *PipeOpenRequest:
-		pm, err = handlePipeOpen(s, v)
+		err = handlePipeOpen(s, v)
 	default:
-		pm, err = nil, fmt.Errorf("unhandled pipe message type")
+		err = fmt.Errorf("unhandled pipe message type")
 	}
 	return err
 }
 
-func handlePipeOpen(p *PipeOpenRequest) (*pipeBound[PipeOpenResponse], error) {
+func handlePipeOpen(s *Session, p *PipeOpenRequest) error {
 	fmt.Printf("%v\n", p)
-	return &pipeBound[PipeOpenResponse]{
+	err := s.Write(&PipeFrame{&pipeBound[PipeOpenResponse]{
 		RoutingValue(p.pipeIndex),
 		PipeOpenResponse{
 			command:         1,
 			serverPipeIndex: p.pipeIndex,
 			status:          0,
 		},
-	}, nil
+	}})
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
-func handleControlFrame(rq *ControlFrame) error {
+func handleControlFrame(s *Session, rq *ControlFrame) error {
 	switch rq.ControlFrameBody.(type) {
 	case *ConnectionRequest:
-		return nil
+		fmt.Println("connection request")
+		return s.Write(rq)
 	case *ConnectionEstablished:
-		return &ControlFrame{&defaultTransportParameters}, nil
+		fmt.Println("connection estbd")
+		return s.Write(&PipeFrame{&ControlFrame{&defaultTransportParameters}})
 	}
 	return fmt.Errorf("unknown control frame type 0x%x", rq.Type)
 }

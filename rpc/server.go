@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"sync"
 	"time"
@@ -26,9 +27,19 @@ type Server struct {
 
 type Session struct {
 	userID string
+	conn   net.Conn
 }
 
 // encoding functions (abstract later)
+
+func (s *Session) Write(a Appendable) error {
+	fmt.Println("writing message...")
+	err := writeStraightPacket(s.conn, a)
+	if err != nil {
+		log.Printf("write packet error: %v\n", err)
+	}
+	return err
+}
 
 func NewServer() *Server {
 	return &Server{
@@ -68,7 +79,9 @@ func (s *Server) Serve(ctx context.Context, l net.Listener) error {
 func (s *Server) handle(c net.Conn, id int) error {
 	fmt.Printf("new connection, id %d\n", id)
 	defer s.remove(c)
-	session := Session{}
+	session := Session{
+		conn: c,
+	}
 	for {
 		c.SetReadDeadline(time.Now().Add(idleTimeout))
 		packet, err := readStraightPacket(c)
@@ -81,17 +94,10 @@ func (s *Server) handle(c net.Conn, id int) error {
 			fmt.Printf("unmarshaling error %v\n", err)
 			return err
 		} else {
+			fmt.Println("about to dispatch")
 			err := dispatchPipeMessage(&session, p)
 			if err != nil {
 				fmt.Printf("dispatch: %v\n", err)
-			} else {
-				fmt.Println("sending response")
-				err := writeStraightPacket(c, res)
-				if err != nil {
-					fmt.Printf("write packet error %v", err)
-				} else {
-					fmt.Println("sent successful")
-				}
 			}
 		}
 	}
