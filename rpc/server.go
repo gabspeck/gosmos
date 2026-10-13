@@ -81,7 +81,7 @@ func (s *Server) handle(c net.Conn, id int) error {
 			fmt.Printf("unmarshaling error %v\n", err)
 			return err
 		} else {
-			res, err := dispatchPipeMessage(&session, p)
+			err := dispatchPipeMessage(&session, p)
 			if err != nil {
 				fmt.Printf("dispatch: %v\n", err)
 			} else {

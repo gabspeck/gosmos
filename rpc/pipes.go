@@ -465,19 +465,18 @@ func unmarshalIteratorCancel(f fieldReader) (HostBlock, error) {
 	return nil, nil
 }
 
-func dispatchPipeMessage(_ *Session, p *PipeFrame) (Appendable, error) {
+func dispatchPipeMessage(s *Session, p *PipeFrame) error {
 	fmt.Printf("dispatching a %v\n", reflect.TypeOf(p.PipeMessage))
-	var pm PipeMessage
 	var err error
 	switch v := p.PipeMessage.(type) {
 	case *ControlFrame:
-		pm, err = handleControlFrame(v)
+		pm, err = handleControlFrame(s, v)
 	case *PipeOpenRequest:
-		pm, err = handlePipeOpen(v)
+		pm, err = handlePipeOpen(s, v)
 	default:
 		pm, err = nil, fmt.Errorf("unhandled pipe message type")
 	}
-	return &PipeFrame{pm}, err
+	return err
 }
 
 func handlePipeOpen(p *PipeOpenRequest) (*pipeBound[PipeOpenResponse], error) {
@@ -490,16 +489,14 @@ func handlePipeOpen(p *PipeOpenRequest) (*pipeBound[PipeOpenResponse], error) {
 			status:          0,
 		},
 	}, nil
-	// correct answer: 11 bytes (pipe 4):  0b00_00_0400_0100_0400_0000
-	// actually sending: 9 bytes (pipe 4)  0b00_00_0700_0100_0700_0000
 }
 
-func handleControlFrame(rq *ControlFrame) (*ControlFrame, error) {
+func handleControlFrame(rq *ControlFrame) error {
 	switch rq.ControlFrameBody.(type) {
 	case *ConnectionRequest:
-		return rq, nil
+		return nil
 	case *ConnectionEstablished:
 		return &ControlFrame{&defaultTransportParameters}, nil
 	}
-	return nil, fmt.Errorf("unknown control frame type 0x%x", rq.Type)
+	return fmt.Errorf("unknown control frame type 0x%x", rq.Type)
 }
