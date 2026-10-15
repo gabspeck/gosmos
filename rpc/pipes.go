@@ -71,18 +71,19 @@ type (
 	PipeData         struct {
 		HostBlock
 	}
+	// todo: turn this into an Appendable struct that serializes class and delegates body appending
 	HostBlock interface {
 		Class() HostBlockClass
 	}
+	// todo: turn this into an Appendable struct that serializes  method and requestID
 	CallBlock interface {
 		HostBlock
 		Method() uint8
 		RequestID() uint32
 	}
-	InterfaceTable struct {
-		interfaces map[uint8]GUID
-	}
-	methodCall struct {
+	// todo: InterfaceTable is actually a callblock with class, method and request id all 0
+	InterfaceTable map[uint8]GUID
+	methodCall     struct {
 		class     HostBlockClass
 		method    uint8
 		requestID uint32
@@ -154,6 +155,9 @@ func mustBe[T any](v any) T {
 	return tv
 }
 
+func (p *PipeData) Append(b []byte) []byte {}
+func (p *PipeData) Size() int              {}
+
 func (p *PipeFrame) Size() int {
 	app := mustBe[Appendable](p.PipeMessage)
 	return 2 + app.Size()
@@ -186,6 +190,18 @@ func (c *ControlFrame) Append(b []byte) []byte {
 	app := mustBe[Appendable](c.ControlFrameBody)
 	b = append(b, byte(c.Type()))
 	return app.Append(b)
+}
+
+func (i InterfaceTable) Append(b []byte) []byte {
+	for _, v := range i {
+		b = append(b, v[:]...)
+		b = append(b, 1)
+	}
+	return b
+}
+
+func (i InterfaceTable) Size() int {
+	return len(i)*16 + len(i)
 }
 
 func (t *TransportParameters) Size() int {
@@ -491,6 +507,20 @@ func handlePipeOpen(s *Session, p *PipeOpenRequest) error {
 	}})
 	if err != nil {
 		return err
+	}
+	if p.serviceName == "LOGSRV" {
+		s.Write(&PipeFrame{&pipeBound[InterfaceTable]{
+			RoutingValue(p.pipeIndex),
+			InterfaceTable{
+				1: GUID{
+					0xC2, 0x8B, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0xC0, 0x00,
+					0x00, 0x00, 0x00, 0x00, 0x00, 0x46,
+				},
+			},
+			// correct -> 1900000300000000c28b020000000000c00000000000004606
+			// wrong ->   16000003      00c28b020000000000c00000000000004601
+
+		}})
 	}
 	return nil
 }
